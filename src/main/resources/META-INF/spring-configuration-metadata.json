@@ -1,0 +1,141 @@
+{
+  "groups": [
+    {
+      "name": "cloudskill.sdk",
+      "type": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties"
+    }
+  ],
+  "properties": [
+    {
+      "name": "cloudskill.sdk.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用Cloud Skill SDK",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "cloudskill.sdk.server-url",
+      "type": "java.lang.String",
+      "description": "Cloud Skill 服务端地址",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": "http://localhost:8080"
+    },
+    {
+      "name": "cloudskill.sdk.api-key",
+      "type": "java.lang.String",
+      "description": "API Key 身份认证",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties"
+    },
+    {
+      "name": "cloudskill.sdk.auto-sync",
+      "type": "java.lang.Boolean",
+      "description": "是否自动同步技能",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "cloudskill.sdk.sync-interval",
+      "type": "java.lang.Integer",
+      "description": "技能同步间隔（秒）",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 30
+    },
+    {
+      "name": "cloudskill.sdk.enable-web-socket",
+      "type": "java.lang.Boolean",
+      "description": "是否启用WebSocket实时推送",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "cloudskill.sdk.reconnect-interval",
+      "type": "java.lang.Integer",
+      "description": "WebSocket重连间隔（秒）",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 5
+    },
+    {
+      "name": "cloudskill.sdk.call-timeout",
+      "type": "java.lang.Integer",
+      "description": "技能调用超时时间（毫秒）",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 30000
+    },
+    {
+      "name": "cloudskill.sdk.retry-count",
+      "type": "java.lang.Integer",
+      "description": "调用失败重试次数",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 3
+    },
+    {
+      "name": "cloudskill.sdk.enable-local-cache",
+      "type": "java.lang.Boolean",
+      "description": "是否启用本地缓存",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "cloudskill.sdk.cache-expire-time",
+      "type": "java.lang.Long",
+      "description": "本地缓存过期时间（秒）",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 3600
+    },
+    {
+      "name": "cloudskill.sdk.enable-agent-integration",
+      "type": "java.lang.Boolean",
+      "description": "是否启用Agent集成，自动将技能注入到Spring AI Agent中",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "cloudskill.sdk.enable-chat-model-proxy",
+      "type": "java.lang.Boolean",
+      "description": "是否启用ChatModel代理，自动处理工具调用",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "cloudskill.sdk.dynamic-skills.mode",
+      "type": "com.cloudskill.sdk.agent.DynamicSkillsMode",
+      "description": "动态技能模式：OFF-关闭，GLOBAL-全局拦截，ANNOTATION-注解模式",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": "GLOBAL"
+    },
+    {
+      "name": "cloudskill.sdk.dynamic-skills.order",
+      "type": "java.lang.Integer",
+      "description": "Advisor执行顺序",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": 2147483547
+    },
+    {
+      "name": "cloudskill.sdk.debug",
+      "type": "java.lang.Boolean",
+      "description": "是否启用调试模式，输出详细日志",
+      "sourceType": "com.cloudskill.sdk.config.CloudSkillProperties",
+      "defaultValue": false
+    }
+  ],
+  "hints": [
+    {
+      "name": "cloudskill.sdk.dynamic-skills.mode",
+      "values": [
+        {
+          "value": "OFF",
+          "description": "关闭动态技能功能"
+        },
+        {
+          "value": "GLOBAL",
+          "description": "全局模式，拦截所有ChatModel调用"
+        },
+        {
+          "value": "ANNOTATION",
+          "description": "注解模式，仅拦截标注了@EnableDynamicSkills的方法"
+        }
+      ]
+    }
+  ]
+}
