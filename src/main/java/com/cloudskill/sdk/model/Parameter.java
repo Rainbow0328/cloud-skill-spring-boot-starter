@@ -15,9 +15,13 @@
  */
 package com.cloudskill.sdk.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 /**
  * 技能参数定义
+ * 忽略未知字段以支持版本兼容性
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class Parameter {
     private String name;
     private String type;

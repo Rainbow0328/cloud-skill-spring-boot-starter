@@ -16,6 +16,7 @@
 package com.cloudskill.sdk.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.LocalDateTime;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -27,7 +28,10 @@ public class SkillChangeEvent {
     private String skillId;
     private ChangeType changeType;
     private Skill skill;
+    
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime timestamp;
+    
     private String version;
 
     // Getter methods

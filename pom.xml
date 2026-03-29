@@ -17,9 +17,12 @@
         <relativePath/>
     </parent>
 
-    <properties>
+   <properties>
         <java.version>17</java.version>
-        <spring-ai.version>1.0.0-M4</spring-ai.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
+        <spring-ai.version>1.0.0</spring-ai.version>
         <spring-ai-alibaba.version>1.1.2.0</spring-ai-alibaba.version>
         <swagger-parser.version>2.1.20</swagger-parser.version>
     </properties>
@@ -45,13 +48,8 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-
-            <!-- 显式声明Spring AI核心依赖版本 -->
-            <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-core</artifactId>
-                <version>${spring-ai.version}</version>
-            </dependency>
+            
+            <!-- Spring AI Alibaba -->
             <dependency>
                 <groupId>com.alibaba.cloud.ai</groupId>
                 <artifactId>spring-ai-alibaba-agent-framework</artifactId>
@@ -76,11 +74,12 @@
                 <artifactId>hutool-all</artifactId>
                 <version>5.8.23</version>
             </dependency>
-
+        
+            <!-- JSON Schema 验证 -->
             <dependency>
-                <groupId>io.swagger.parser.v3</groupId>
-                <artifactId>swagger-parser</artifactId>
-                <version>${swagger-parser.version}</version>
+                <groupId>com.networknt</groupId>
+                <artifactId>json-schema-validator</artifactId>
+                <version>1.0.87</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -118,21 +117,21 @@
             <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
 
-        <!-- 可选依赖：Spring AI Alibaba（Agent集成需要） -->
+        <!-- 可选依赖：Spring AI Alibaba（Agent 集成需要） -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-agent-framework</artifactId>
             <optional>true</optional>
         </dependency>
-
-        <!-- Spring AI 工具API -->
+        
+        <!-- Spring AI Alibaba DashScope 支持 -->
         <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-core</artifactId>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
             <optional>true</optional>
         </dependency>
-
-        <!-- AOP相关依赖（可选，仅用于@EnableDynamicSkills注解） -->
+        
+        <!-- AOP 相关依赖（可选，仅用于@EnableDynamicSkills 注解） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>
@@ -150,6 +149,21 @@
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-http</artifactId>
             <version>5.8.23</version>
+        </dependency>
+        
+
+        
+        <!-- JSON Schema 验证 -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>1.0.87</version>
+        </dependency>
+                
+        <!-- Redis 支持（用于技能变更监听） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
         <dependency>

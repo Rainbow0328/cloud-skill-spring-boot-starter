@@ -8,54 +8,89 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * distributed under an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
 package com.cloudskill.sdk.autoconfigure;
 
 import com.cloudskill.sdk.agent.McpSkillManager;
-import com.cloudskill.sdk.agent.aop.DynamicSkillsAspect;
-import com.cloudskill.sdk.agent.proxy.DynamicSkillsChatModelProxy;
+import com.cloudskill.sdk.agent.alibaba.SpringAiAlibabaAgentAdapter;
 import com.cloudskill.sdk.config.CloudSkillProperties;
+import com.cloudskill.sdk.spi.SkillConverter;
+import com.cloudskill.sdk.spi.SkillExecutionHook;
 import com.cloudskill.sdk.core.CloudSkillClient;
+import com.cloudskill.sdk.core.SkillCache;
+import com.cloudskill.sdk.core.metrics.SkillMetrics;
+import com.cloudskill.sdk.listener.RedisSkillChangeListener;
 import com.cloudskill.sdk.registry.ServiceRegistryManager;
+import com.cloudskill.sdk.task.SkillCacheRefresher;
 import com.cloudskill.sdk.task.SkillSyncTask;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
-import org.aspectj.lang.annotation.Aspect;
-import org.aspectj.lang.annotation.Pointcut;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-@Slf4j
+import java.util.List;
+import jakarta.annotation.PostConstruct;
+import org.springframework.core.env.Environment;
 
+@Slf4j
 @Configuration
 @EnableConfigurationProperties(CloudSkillProperties.class)
-@ConditionalOnProperty(prefix = "cloudskill.sdk", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "cloud.skill", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnClass(CloudSkillClient.class)
 @EnableScheduling
 public class CloudSkillAutoConfiguration {
     
-    @Value("${server.port:8080}")
     private Integer serverPort;
+    
+    @jakarta.annotation.Resource
+    private Environment environment;
+    
+    @PostConstruct
+    public void init() {
+        if (serverPort == null) {
+            String portStr = environment.getProperty("server.port");
+            if (portStr != null) {
+                serverPort = Integer.parseInt(portStr);
+            }
+        }
+    }
     
     @Bean
     @ConditionalOnMissingBean
-    public CloudSkillClient cloudSkillClient(CloudSkillProperties properties) {
+    @ConditionalOnClass(MeterRegistry.class)
+    public SkillMetrics skillMetrics(ObjectProvider<MeterRegistry> meterRegistryProvider) {
+        return new SkillMetrics(meterRegistryProvider.getIfAvailable());
+    }
+    
+    @Bean
+    @ConditionalOnMissingBean
+    public CloudSkillClient cloudSkillClient(CloudSkillProperties properties, 
+                                            SkillCache skillCache,
+                                            Environment environment) {
         // 自动注入服务端口
         if (properties.getServicePort() == null && properties.isEnableServiceRegistry()) {
             properties.setServicePort(serverPort);
+        }
+        
+        // 如果没有配置 serviceName，默认使用 spring.application.name
+        if (properties.getServiceName() == null || properties.getServiceName().isEmpty()) {
+            String appName = environment.getProperty("spring.application.name", "unknown-application");
+            properties.setServiceName(appName);
+            log.info("Auto-set serviceName from spring.application.name: {}", appName);
         }
         
         // 调试日志：打印配置属性
@@ -64,73 +99,143 @@ public class CloudSkillAutoConfiguration {
         log.info("serviceName: {}", properties.getServiceName());
         log.info("servicePort: {}", properties.getServicePort());
         log.info("serverUrl: {}", properties.getServerUrl());
-        log.info("apiKey: {}", properties.getApiKey());
+        log.info("apiKey: {}", properties.getApiKey() != null ? "[masked]" : "null");
         log.info("==============================");
         
-        return new CloudSkillClient(properties);
+        return new CloudSkillClient(properties, skillCache);
     }
     
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "cloudskill.sdk", name = "auto-sync", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-local-cache", havingValue = "true", matchIfMissing = true)
+    public SkillCache skillCache(CloudSkillProperties properties) {
+        return new SkillCache(
+            properties.getCacheExpireTime(),
+            properties.getCacheCheckInterval()
+        );
+    }
+    
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "cloud.skill", name = "auto-sync", havingValue = "true", matchIfMissing = true)
     public SkillSyncTask skillSyncTask(CloudSkillClient cloudSkillClient) {
         return new SkillSyncTask(cloudSkillClient);
     }
     
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "cloudskill.sdk", name = "enable-service-registry", havingValue = "true")
+    @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-local-cache", havingValue = "true", matchIfMissing = true)
+    public SkillCacheRefresher skillCacheRefresher(SkillCache skillCache, 
+                                                    CloudSkillClient cloudSkillClient,
+                                                    CloudSkillProperties properties) {
+        return new SkillCacheRefresher(skillCache, cloudSkillClient, properties);
+    }
+    
+    @Bean
+    @ConditionalOnMissingBean
     public ServiceRegistryManager serviceRegistryManager(CloudSkillProperties properties) {
-        log.info("Creating ServiceRegistryManager, enableServiceRegistry: {}, serviceName: {}",
-                properties.isEnableServiceRegistry(),
+        log.info("Creating ServiceRegistryManager, serviceName: {}",
                 properties.getServiceName());
         ServiceRegistryManager registryManager = new ServiceRegistryManager(properties);
-        // 启动服务注册
-        registryManager.start();
+        if (properties.isEnableServiceRegistry()) {
+            registryManager.start();
+        } else {
+            log.info("Service registry disabled by configuration");
+        }
         return registryManager;
     }
     
     /**
-     * 注册MCP技能管理器，提供动态技能的加载和管理
+     * 配置 Redis 消息监听器容器（仅在应用未定义时创建）
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnClass(name = "org.springframework.ai.tool.ToolCallback")
-    @ConditionalOnProperty(prefix = "cloudskill.sdk", name = "enable-agent-integration", havingValue = "true", matchIfMissing = true)
+    public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory redisConnectionFactory) {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(redisConnectionFactory);
+        log.info("RedisMessageListenerContainer configured");
+        return container;
+    }
+    
+    /**
+     * 配置技能变更监听器（仅在应用未定义时创建）
+     * 使用 Redis 实现
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-listener", havingValue = "true", matchIfMissing = true)
+    public RedisSkillChangeListener skillChangeListener(
+            StringRedisTemplate redisTemplate,
+            ObjectMapper objectMapper,
+            SkillCache skillCache,
+            RedisMessageListenerContainer redisMessageListenerContainer,
+            CloudSkillClient cloudSkillClient,
+            Environment environment) {
+        
+        log.info("Configuring RedisSkillChangeListener for real-time skill change notification");
+        
+        // 创建定时任务调度器
+        java.util.concurrent.ScheduledExecutorService scheduler = 
+            java.util.concurrent.Executors.newScheduledThreadPool(2);
+        
+        // 创建监听器
+        RedisSkillChangeListener listener = new RedisSkillChangeListener(
+            redisTemplate,
+            objectMapper,
+            skillCache,
+            redisMessageListenerContainer,
+            scheduler,
+            cloudSkillClient,
+            environment
+        );
+        
+        // 订阅频道
+        listener.subscribe();
+        
+        return listener;
+    }
+    
+    /**
+     * 配置 ObjectMapper（仅在应用未定义时创建）
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+    
+    /**
+     * 注册 MCP 技能管理器，提供动态技能的加载和管理
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(ToolCallback.class)
+    @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-agent-integration", havingValue = "true", matchIfMissing = true)
     public McpSkillManager mcpSkillManager(CloudSkillClient cloudSkillClient) {
+        log.info("Initializing McpSkillManager for dynamic skill management");
         return new McpSkillManager(cloudSkillClient);
     }
+    
 
     
     /**
-     * ChatModel代理，自动处理动态技能
+     * Spring AI Alibaba Agent 适配器，支持 ReactAgent 动态技能注入
      */
     @Bean
-    @Primary
-    @ConditionalOnMissingBean
-    @ConditionalOnClass(ChatModel.class)
-    @ConditionalOnProperty(prefix = "cloudskill.sdk", name = "enable-agent-integration", havingValue = "true", matchIfMissing = true)
-    public DynamicSkillsChatModelProxy dynamicSkillsChatModelProxy(ChatModel chatModel, CloudSkillClient cloudSkillClient, ObjectMapper objectMapper) {
-        return new DynamicSkillsChatModelProxy(chatModel, cloudSkillClient, objectMapper);
-    }
-
-    /**
-     * AOP相关配置，仅当AOP可用时加载
-     */
-    @Configuration
-    @ConditionalOnClass({Aspect.class, Pointcut.class})
-    @ConditionalOnProperty(prefix = "cloudskill.sdk.dynamic-skills.aop", name = "enabled", havingValue = "true", matchIfMissing = true)
-    @EnableAspectJAutoProxy(proxyTargetClass = true)
-    public static class AopConfiguration {
+    @ConditionalOnClass(name = "com.alibaba.cloud.ai.graph.agent.ReactAgent")
+    @ConditionalOnProperty(prefix = "cloud.skill.alibaba", name = "enable-agent-support", havingValue = "true", matchIfMissing = true)
+    public SpringAiAlibabaAgentAdapter springAiAlibabaAgentAdapter(
+            CloudSkillClient cloudSkillClient,
+            CloudSkillProperties properties,
+            ObjectProvider<List<SkillConverter>> convertersProvider,
+            ObjectProvider<List<SkillExecutionHook>> hooksProvider) {
         
-        /**
-         * 动态技能AOP切面
-         */
-        @Bean
-        @ConditionalOnMissingBean
-        public DynamicSkillsAspect dynamicSkillsAspect(CloudSkillClient cloudSkillClient) {
-            return new DynamicSkillsAspect(cloudSkillClient);
-        }
+        log.info("Initializing SpringAiAlibabaAgentAdapter for ReactAgent support");
+        return new SpringAiAlibabaAgentAdapter(
+                cloudSkillClient,
+                properties,
+                convertersProvider,
+                hooksProvider
+        );
     }
-
 }

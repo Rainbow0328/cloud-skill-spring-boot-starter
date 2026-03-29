@@ -8,8 +8,7 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * distributed under an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
@@ -18,21 +17,22 @@ package com.cloudskill.sdk.agent.annotation;
 import java.lang.annotation.*;
 
 /**
- * 启用动态技能注解
- * 标注在类或方法上，表示该类/方法调用ChatModel时需要注入动态技能
+ * 启用动态技能注入
+ * 可以标注在类或方法上，细粒度控制是否启用动态技能注入
+ * 全局默认由配置文件控制：cloud.skill.dynamic-skills.enabled
+ *
+ * 优先级：方法注解 > 类注解 > 全局配置
+ *
+ * @author Cloud Skill Team
+ * @version 1.0.0
  */
 @Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
-@Documented
 public @interface EnableDynamicSkills {
-    
+
     /**
-     * 要注入的技能ID列表，为空则注入所有可用技能
+     * 是否启用动态技能注入
+     * @return true启用，false禁用
      */
-    String[] value() default {};
-    
-    /**
-     * 要排除的技能ID列表
-     */
-    String[] exclude() default {};
+    boolean value() default true;
 }

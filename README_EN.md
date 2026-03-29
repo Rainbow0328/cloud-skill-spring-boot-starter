@@ -32,9 +32,12 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 
 ### Design Philosophy
 - **Zero-intrusion Integration**: Based on Spring Boot auto-configuration, no modification to existing business code required
+- **Skill Sharing Platform**: Develop once, all AI applications across the platform automatically gain the ability to call, eliminating repetitive development
+- **Dynamic Enhancement**: After a skill is dynamically registered on the server, it is automatically synchronized to all consumer applications, taking effect in real-time without restarting
 - **Cloud Native Friendly**: Supports K8s environment, service discovery, elastic scaling
 - **Production-grade Availability**: Provides comprehensive fault tolerance, monitoring, and security mechanisms
-- **Open Ecosystem**: Compatible with Spring AI ecosystem, supports custom extensions
+- **Open Ecosystem**: Compatible with both Spring AI and Spring AI Alibaba ecosystems, supports custom extensions
+- **Template Method Architecture**: Abstract parent class defines the skeleton, concrete subclasses implement details, easy to extend
 
 ### Industry Pain Points Solved
 1. **Low Development Efficiency**: Repeated development of the same tool functions across multiple AI applications leads to exponential maintenance cost growth
@@ -46,9 +49,10 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 ### Business Value
 | Dimension | Traditional Development Model | Cloud Skill Model |
 |-----------|--------------------------------|-------------------|
-| Tool Development | Independently developed per application | Develop once, reuse across entire platform |
-| Update Cycle | Weekly/Monthly per application release cycle | Real-time生效, seconds-level update |
-| Maintenance Cost | High, decentralized maintenance across applications | Low, centralized management, one-time operation |
+| Tool Development | Every AI application develops the same tool repeatedly | **Develop once, all AI applications across the platform automatically gain calling capability** |
+| Update Release | Each application needs to be repackaged and deployed, released weekly/monthly | After registration on the server, all consumers get it in real-time, **takes effect in seconds without restart** |
+| Operation & Maintenance | Decentralized maintenance across multiple applications, high repetitive work cost | Centralized management, one update synchronized across the entire platform |
+| Version Consistency | Different applications have inconsistent versions, difficult to unify | All consumers automatically synchronize to the latest version |
 | Security Governance | No unified control, high risk | Unified permissions, auditing, rate limiting |
 | Observability | No unified monitoring, difficult problem location | Full-link monitoring, strong observability |
 
@@ -57,17 +61,21 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 ## Core Features
 
 ### 🎯 Dynamic Skill Management
-- **Multi-mode Synchronization**: Supports full synchronization, incremental synchronization, and WebSocket real-time push mechanisms
-- **Multi-level Cache**: Local memory cache + external process cache two-level cache architecture, 10x performance improvement
-- **Version Management**: Complete skill version control, supports gray release and rollback
+- **Skill Sharing Platform**: Develop once and deploy, all AI applications across the platform automatically get the calling capability, completely eliminating repetitive development
+- **Dynamic Real-time Enhancement**: After a skill is registered on the server, it is automatically pushed to all consumers, AI applications get new capabilities without restarting
+- **Multi-mode Synchronization**: Supports full synchronization, incremental synchronization, and Redis publish/subscribe real-time push mechanisms
+- **Local Cache First**: Full caching of skill metadata in local memory for millisecond access performance
+- **Version Continuity Check**: Incremental updates based on timestamp, trigger full synchronization automatically when discontinuous
+- **Version Check Before Injection**: Check version before each call, automatically synchronize when expired to ensure consistency
 - **Degradation Strategy**: Automatically degrades to use local cache when server is unavailable, ensuring business continuity
 - **Automatic Expiration**: Supports TTL-based cache automatic invalidation to ensure data consistency
 
-### 🔌 Deep Integration with Spring AI Ecosystem
+### 🔌 Deep Integration with Spring AI & Spring AI Alibaba Ecosystem
 - **Automatic Adaptation**: Automatically converts remote skills to Spring AI standard `ToolCallback` interfaces
-- **Seamless Integration**: Supports Spring AI Alibaba Agent framework, full Function Calling process
-- **Streaming Support**: Perfectly adapts to streaming response scenarios without blocking user interaction
-- **Context Propagation**: Supports skill call context pass-through, meeting complex business scenario requirements
+- **DashScope Special Adaptation**: Perfectly adapts Spring AI Alibaba DashScope, correctly converts tool format
+- **Seamless Integration**: Supports Spring AI ChatModel, ChatClient, ReactAgent full scenarios
+- **ReactAgent Auto-injection**: Automatically detects ReactAgent Bean through BeanPostProcessor, zero-invasion injection
+- **Template Method Architecture**: Unified abstract `AbstractToolInjector`, different scenarios use different subclasses, easy to extend
 - **Protocol Compatibility**: Compatible with mainstream protocols such as OpenAI Function Calling, Anthropic Tool Use
 
 ### 🛡️ Enterprise-grade Production Features
@@ -76,18 +84,21 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 - **Observability**: Built-in Metrics indicators, call link tracing, and audit log output
 - **Security Hardening**: Parameter verification, sensitive data desensitization, abnormal behavior detection
 - **Compliance Support**: Meets compliance requirements such as Equal Protection 2.0 and Data Security Law
+- **Correct GET Parameter Handling**: GET request parameters are correctly spliced into URL, will not be placed in body
 
-### 🎛️ Flexible Usage Modes
-- **OFF Mode**: Completely disables dynamic skill functionality without affecting existing business
-- **GLOBAL Mode**: Globally intercepts all ChatModel calls, automatically injects all available skills
-- **ANNOTATION Mode**: Fine-grained control, only effective for classes/methods annotated with `@EnableDynamicSkills`
-- **PROXY Mode**: ChatModel proxy mode, transparently handles the entire tool call process
+### 🎛️ Flexible Enable Control
+- **Global Configuration**: Global switch via `cloud.skill.dynamic-skills.enabled`
+- **Class Annotation**: `@EnableDynamicSkills` annotated on class, controls the entire class
+- **Method Annotation**: `@EnableDynamicSkills` annotated on method, fine-grained control
+- **Priority**: Method Annotation > Class Annotation > Global Configuration, flexible for various scenarios
+- **Supports Disabling**: You can set `@EnableDynamicSkills(false)` to disable specific methods
 
 ### 🔧 Highly Extensible Architecture
-- **SPI Extension Points**: Provides standard extension interfaces such as SkillConverter and ExecutionHook
+- **Template Method Pattern**: Both skill change listening and tool injection adopt abstract template method architecture
+- **SPI Extension Points**: Provides standard extension interfaces such as `SkillConverter` and `SkillExecutionHook`
+- **Message Queue Extension**: Supports Redis/RabbitMQ/Kafka multiple message queues, only need subclasses for new message queue
+- **AI Client Extension**: Supports ChatModel/ChatClient/ReactAgent, only need subclasses for new AI client
 - **Custom Implementation**: Supports custom skill conversion, call interception, and result processing logic
-- **Plugin System**: Supports platform capability expansion through plugins, such as custom monitoring and alerts
-- **Protocol Extension**: Supports custom protocols to access third-party skill platforms
 
 ---
 
@@ -137,24 +148,42 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 ```
 
 ### Core Component Layering
+
+#### Injection Architecture (Inject tools into AI model)
 | Layer | Component | Responsibility |
 |-------|-----------|----------------|
-| Access Layer | DynamicSkillsAdvisor | AOP aspect, intercepts ChatModel calls |
-| Access Layer | DynamicSkillsChatModelProxy | ChatModel proxy, transparently handles tool calls |
-| Management Layer | McpSkillManager | Skill lifecycle management, ToolCallback conversion |
-| Communication Layer | CloudSkillClient | Communicates with MCP server, encapsulates HTTP/WebSocket protocols |
-| Sync Layer | SkillSyncTask | Scheduled synchronization task, ensures eventual consistency of skill data |
-| Sync Layer | CloudSkillWebSocketClient | WebSocket client, receives real-time change pushes |
-| Storage Layer | SkillCache | Local cache, improves access performance |
+| Annotation | `@EnableDynamicSkills` | Fine-grained enable/disable control, supports class and method |
+| AOP Aspect | `DynamicSkillsAdvisor` | Pointcut matching, only intercept when all conditions are met |
+| Abstract Base | `AbstractToolInjector` | Template method, unified processing: version check + tool injection |
+| Concrete Implementation | `ChatModelToolInjector` | ChatModel scenario specific implementation, intercepts `call(Prompt)` |
+| Management Layer | `McpSkillManager` | Skill conversion Skill → ToolCallback, refresh tool list |
+
+#### Listening Architecture (Skill change notification)
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| Abstract Base | `AbstractSkillChangeListener` | Template method, unified processing: version check + message dispatch + full sync |
+| Concrete Implementation | `RedisSkillChangeListener` | Redis publish/subscribe specific implementation, receive message and call parent processing |
+| Storage Layer | `SkillCache` | Local skill cache, stores skill metadata |
+
+#### Core Services
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| Communication Layer | `CloudSkillClient` | Communicate with MCP server, HTTP call, get global timestamp, full sync |
+| Scheduled Task | `SkillSyncTask` | Scheduled synchronization task, ensures eventual consistency |
+| Scheduled Task | `SkillCacheRefresher` | Cache refresh, check expiration |
+| SPI Extension | `SkillConverter` | Custom skill converter |
+| SPI Extension | `SkillExecutionHook` | Skill call hook, pre/post processing |
 
 ### Core Workflow
 1. **Startup Initialization**: Automatically registers with MCP server on application startup, synchronizes full skill metadata
 2. **Local Caching**: Skill metadata is cached in local memory, supporting millisecond-level access
-3. **Real-time Updates**: Receives skill change events through long connections, updates local cache in real-time
-4. **Call Interception**: AOP intercepts ChatModel calls, automatically injects available skill lists
-5. **Route Execution**: When AI Agent calls tools, automatically routes to MCP server for execution
-6. **Result Return**: Execution results are converted and returned to AI Agent, completing the call process
-7. **Monitoring Statistics**: Full-link recording of call logs, performance indicators, and reporting to monitoring platform
+3. **Real-time Updates**: Receives skill change events through Redis publish/subscribe, updates local cache in real-time
+4. **Version Check**: Before each ChatModel call, compare local timestamp with Redis global timestamp
+5. **Auto Sync**: If local version is expired, automatically trigger full synchronization, inject after updating cache
+6. **Call Interception**: AOP intercepts ChatModel calls, automatically injects available skill lists into Prompt
+7. **Route Execution**: When AI Agent calls tools, automatically routes to MCP server for execution
+8. **Result Return**: Execution results are converted and returned to AI Agent, completing the call process
+9. **Monitoring Statistics**: Full-link recording of call logs, performance indicators, and reporting to monitoring platform
 
 ---
 
@@ -191,30 +220,37 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 ### Step 2: Basic Configuration
 ```yaml
 # application.yml
-cloudskill:
-  sdk:
+cloud:
+  skill:
     # Basic Configuration
+    enabled: true
     server-url: https://mcp.yourcompany.com  # MCP server address
     api-key: ${CLOUD_SKILL_API_KEY}          # Read API Key from environment variable to avoid hardcoding
     service-name: ${spring.application.name} # Service name, defaults to Spring application name
-    service-version: @project.version@       # Service version, automatically reads Maven version
+    service-version: 1.0.0                   # Service version
     
     # Skill Synchronization Configuration
     auto-sync: true
     sync-interval: 30
-    enable-web-socket: true
-    reconnect-interval: 5
+    enable-listener: true
     
     # Runtime Configuration
-    call-timeout: 10000
-    retry-count: 2
+    call-timeout: 30000
+    retry-count: 3
     enable-local-cache: true
     cache-expire-time: 3600
+    cache-check-interval: 300000
     
-    # Spring AI Integration
+    # Spring AI Integration (dynamic skill injection)
     enable-agent-integration: true
     dynamic-skills:
-      mode: ANNOTATION  # Annotation mode recommended for production environments for fine-grained control
+      enabled: true
+      order: 2147483547
+    
+    # Spring AI Alibaba Specific Configuration
+    alibaba:
+      enable-agent-support: true
+      auto-inject-skills: true
 
 # Spring AI Configuration
 spring:

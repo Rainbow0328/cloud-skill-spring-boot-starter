@@ -18,13 +18,13 @@ package com.cloudskill.sdk.config;
 import com.cloudskill.sdk.agent.DynamicSkillsMode;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "cloudskill.sdk")
+@ConfigurationProperties(prefix = "cloud.skill")
 public class CloudSkillProperties {
     
     /**
      * MCP服务端地址
      */
-    private String serverUrl = "http://localhost:8080";
+    private String serverUrl = "http://localhost:8766";
     
     /**
      * API Key
@@ -72,9 +72,15 @@ public class CloudSkillProperties {
     private long cacheExpireTime = 3600;
     
     /**
+     * 后台检查缓存更新间隔（毫秒）
+     * 默认：300000 (5 分钟)
+     */
+    private long cacheCheckInterval = 300000;
+    
+    /**
      * 是否启用服务自动注册
      */
-    private boolean enableServiceRegistry = false;
+    private boolean enableServiceRegistry = true;
     
     /**
      * 服务名称
@@ -112,9 +118,47 @@ public class CloudSkillProperties {
     private boolean enableAgentIntegration = true;
     
     /**
+     * 参数校验配置
+     */
+    private Validation validation = new Validation();
+    
+    /**
      * 动态技能配置
      */
     private DynamicSkills dynamicSkills = new DynamicSkills();
+    
+    /**
+     * Spring AI Alibaba 特定配置
+     */
+    private Alibaba alibaba = new Alibaba();
+    
+    /**
+     * 参数校验配置类
+     */
+    public static class Validation {
+        /**
+         * 是否启用请求参数校验
+         */
+        private boolean enableRequestValidation = true;
+        
+        /**
+         * 是否启用响应结果校验
+         */
+        private boolean enableResponseValidation = true;
+        
+        /**
+         * 校验失败时是否阻止调用（false时仅记录警告）
+         */
+        private boolean failOnError = true;
+        
+        // Getter and Setter
+        public boolean isEnableRequestValidation() { return enableRequestValidation; }
+        public void setEnableRequestValidation(boolean enableRequestValidation) { this.enableRequestValidation = enableRequestValidation; }
+        public boolean isEnableResponseValidation() { return enableResponseValidation; }
+        public void setEnableResponseValidation(boolean enableResponseValidation) { this.enableResponseValidation = enableResponseValidation; }
+        public boolean isFailOnError() { return failOnError; }
+        public void setFailOnError(boolean failOnError) { this.failOnError = failOnError; }
+    }
     
     /**
      * 是否启用调试模式，输出详细日志
@@ -158,6 +202,7 @@ public class CloudSkillProperties {
     public int getRetryCount() { return retryCount; }
     public boolean isEnableLocalCache() { return enableLocalCache; }
     public long getCacheExpireTime() { return cacheExpireTime; }
+    public long getCacheCheckInterval() { return cacheCheckInterval; }
     public boolean isEnableServiceRegistry() { return enableServiceRegistry; }
     public String getServiceName() { return serviceName; }
     public String getServiceVersion() { return serviceVersion; }
@@ -166,7 +211,9 @@ public class CloudSkillProperties {
     public int getHeartbeatInterval() { return heartbeatInterval; }
     public String getInstanceId() { return instanceId; }
     public boolean isEnableAgentIntegration() { return enableAgentIntegration; }
+    public Validation getValidation() { return validation; }
     public DynamicSkills getDynamicSkills() { return dynamicSkills; }
+    public Alibaba getAlibaba() { return alibaba; }
 
     // Setter methods
     public void setServerUrl(String serverUrl) { this.serverUrl = serverUrl; }
@@ -179,6 +226,7 @@ public class CloudSkillProperties {
     public void setRetryCount(int retryCount) { this.retryCount = retryCount; }
     public void setEnableLocalCache(boolean enableLocalCache) { this.enableLocalCache = enableLocalCache; }
     public void setCacheExpireTime(long cacheExpireTime) { this.cacheExpireTime = cacheExpireTime; }
+    public void setCacheCheckInterval(long cacheCheckInterval) { this.cacheCheckInterval = cacheCheckInterval; }
     public void setEnableServiceRegistry(boolean enableServiceRegistry) { this.enableServiceRegistry = enableServiceRegistry; }
     public void setServiceName(String serviceName) { this.serviceName = serviceName; }
     public void setServiceVersion(String serviceVersion) { this.serviceVersion = serviceVersion; }
@@ -187,5 +235,28 @@ public class CloudSkillProperties {
     public void setHeartbeatInterval(int heartbeatInterval) { this.heartbeatInterval = heartbeatInterval; }
     public void setInstanceId(String instanceId) { this.instanceId = instanceId; }
     public void setEnableAgentIntegration(boolean enableAgentIntegration) { this.enableAgentIntegration = enableAgentIntegration; }
+    public void setValidation(Validation validation) { this.validation = validation; }
     public void setDynamicSkills(DynamicSkills dynamicSkills) { this.dynamicSkills = dynamicSkills; }
+    public void setAlibaba(Alibaba alibaba) { this.alibaba = alibaba; }
+    
+    /**
+     * Spring AI Alibaba 特定配置类
+     */
+    public static class Alibaba {
+        /**
+         * 是否启用 Spring AI Alibaba Agent 支持
+         */
+        private boolean enableAgentSupport = true;
+        
+        /**
+         * 是否自动注入技能到 ReactAgent
+         */
+        private boolean autoInjectSkills = true;
+        
+        // Getter and Setter
+        public boolean isEnableAgentSupport() { return enableAgentSupport; }
+        public void setEnableAgentSupport(boolean enableAgentSupport) { this.enableAgentSupport = enableAgentSupport; }
+        public boolean isAutoInjectSkills() { return autoInjectSkills; }
+        public void setAutoInjectSkills(boolean autoInjectSkills) { this.autoInjectSkills = autoInjectSkills; }
+    }
 }

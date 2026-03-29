@@ -15,16 +15,22 @@
  */
 package com.cloudskill.sdk.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 技能模型
+ * 忽略未知字段以支持版本兼容性
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class Skill {
     private String id;
     private String name;
     private String description;
     private String category;
-    private List<String> tags;
     private String usageScenarios;
     private String endpoint;
     private String httpMethod;
@@ -39,25 +45,29 @@ public class Skill {
     private String providerId;
     private Boolean isPublic;
     
-    /**
-     * 分配的应用ID，为空表示所有应用可用
-     */
-    private String assignedAppId;
-    
-    /**
-     * 分配的服务名称，为空表示所有服务可用
-     */
-    private String assignedServiceName;
-    
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createdAt;
+    
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime updatedAt;
+    
+    // 新增扩展字段
+    private String protocol; // 协议类型：HTTP/GRPC/MQ/CUSTOM 等，默认 HTTP
+    private String contentType; // 请求内容类型：application/json 等，默认 application/json
+    private Map<String, Object> metadata; // 扩展元数据，存储自定义配置
+    private Boolean requireAuth; // 是否需要额外身份验证，默认 false
+    private Integer rateLimit; // 技能级限流配置（QPS），默认不限制
+    private List<String> requiredContext; // 执行需要的上下文参数列表
+    private Map<String, String> parameterMapping; // 参数映射规则，支持上下文参数自动填充
+    private String errorHandlingStrategy; // 错误处理策略：FAIL_FAST/RETRY/FALLBACK/IGNORE
+    private String source; // 技能来源：swagger/springmvc/manual 等
+    private String sourcePath; // 技能来源路径（如 URL 路径、类名。方法名等）
 
     // Getter methods
     public String getId() { return id; }
     public String getName() { return name; }
     public String getDescription() { return description; }
     public String getCategory() { return category; }
-    public List<String> getTags() { return tags; }
     public String getUsageScenarios() { return usageScenarios; }
     public String getEndpoint() { return endpoint; }
     public String getHttpMethod() { return httpMethod; }
@@ -71,8 +81,6 @@ public class Skill {
     public String getVersion() { return version; }
     public String getProviderId() { return providerId; }
     public Boolean getIsPublic() { return isPublic; }
-    public String getAssignedAppId() { return assignedAppId; }
-    public String getAssignedServiceName() { return assignedServiceName; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
 
@@ -81,7 +89,6 @@ public class Skill {
     public void setName(String name) { this.name = name; }
     public void setDescription(String description) { this.description = description; }
     public void setCategory(String category) { this.category = category; }
-    public void setTags(List<String> tags) { this.tags = tags; }
     public void setUsageScenarios(String usageScenarios) { this.usageScenarios = usageScenarios; }
     public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
     public void setHttpMethod(String httpMethod) { this.httpMethod = httpMethod; }
@@ -95,8 +102,30 @@ public class Skill {
     public void setVersion(String version) { this.version = version; }
     public void setProviderId(String providerId) { this.providerId = providerId; }
     public void setIsPublic(Boolean isPublic) { this.isPublic = isPublic; }
-    public void setAssignedAppId(String assignedAppId) { this.assignedAppId = assignedAppId; }
-    public void setAssignedServiceName(String assignedServiceName) { this.assignedServiceName = assignedServiceName; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    
+    // 新增字段的Getter/Setter
+    public String getProtocol() { return protocol; }
+    public void setProtocol(String protocol) { this.protocol = protocol; }
+    public String getContentType() { return contentType; }
+    public void setContentType(String contentType) { this.contentType = contentType; }
+    public Map<String, Object> getMetadata() { return metadata; }
+    public void setMetadata(Map<String, Object> metadata) { this.metadata = metadata; }
+    public Boolean getRequireAuth() { return requireAuth; }
+    public void setRequireAuth(Boolean requireAuth) { this.requireAuth = requireAuth; }
+    public Integer getRateLimit() { return rateLimit; }
+    public void setRateLimit(Integer rateLimit) { this.rateLimit = rateLimit; }
+    public List<String> getRequiredContext() { return requiredContext; }
+    public void setRequiredContext(List<String> requiredContext) { this.requiredContext = requiredContext; }
+    public Map<String, String> getParameterMapping() { return parameterMapping; }
+    public void setParameterMapping(Map<String, String> parameterMapping) { this.parameterMapping = parameterMapping; }
+    public String getErrorHandlingStrategy() { return errorHandlingStrategy; }
+    public void setErrorHandlingStrategy(String errorHandlingStrategy) { this.errorHandlingStrategy = errorHandlingStrategy; }
+    
+    // source 和 sourcePath 的 Getter/Setter
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+    public String getSourcePath() { return sourcePath; }
+    public void setSourcePath(String sourcePath) { this.sourcePath = sourcePath; }
 }

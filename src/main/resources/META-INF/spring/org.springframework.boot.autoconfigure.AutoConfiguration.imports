@@ -1,0 +1,2 @@
+com.cloudskill.sdk.autoconfigure.CloudSkillAutoConfiguration
+com.cloudskill.sdk.agent.DynamicSkillAutoConfiguration

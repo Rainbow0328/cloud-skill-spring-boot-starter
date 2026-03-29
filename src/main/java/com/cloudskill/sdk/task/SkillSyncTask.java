@@ -34,9 +34,13 @@ public class SkillSyncTask {
     
     @Scheduled(fixedDelayString = "${cloudskill.sdk.sync-interval:30}000")
     public void syncSkills() {
-        if (cloudSkillClient.getProperties().isAutoSync()) {
+        try {
             log.debug("Starting scheduled skill sync");
-            cloudSkillClient.syncSkillUpdates();
+            Long globalTimestamp = cloudSkillClient.syncSkills();
+            // syncSkills() 会强制要求返回全局时间戳，否则抛出异常
+            log.debug("Scheduled skill sync completed, globalTimestamp: {}", globalTimestamp);
+        } catch (Exception e) {
+            log.error("Scheduled skill sync failed", e);
         }
     }
 }

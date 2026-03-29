@@ -1,0 +1,53 @@
+# Spring AI Alibaba 配置示例
+
+spring:
+  ai:
+    # DashScope 配置（通义千问）
+    dashscope:
+      api-key: ${AI_DASHSCOPE_API_KEY:your-api-key-here}
+      
+# Cloud Skill SDK 配置
+cloud:
+  skill:
+    sdk:
+      enabled: true
+      server-url: http://localhost:8766
+      api-key: your-api-key
+      
+      # Agent 集成配置
+      enable-agent-integration: true
+      
+      # Spring AI Alibaba 特定配置
+      alibaba:
+        # 是否启用 Spring AI Alibaba Agent 支持
+        enable-agent-support: true
+        # 是否自动注入技能到 ReactAgent
+        auto-inject-skills: true
+        
+      # 动态技能配置
+      dynamic-skills:
+        # 模式：GLOBAL/ANNOTATION/OFF
+        mode: GLOBAL
+        # Advisor 执行顺序
+        order: 0
+        
+      # 调试模式
+      debug: false
+
+# 示例：使用 ReactAgent
+# @Bean
+# public ReactAgent weatherAgent(ChatModel chatModel, SpringAiAlibabaAgentAdapter agentAdapter) {
+#     ReactAgent agent = ReactAgent.builder()
+#         .name("weather_agent")
+#         .model(chatModel)
+#         .systemPrompt("You are a helpful weather assistant")
+#         .saver(new MemorySaver())
+#         .build();
+#     
+#     // 自动注入技能
+#     if (cloudSkillProperties.getAlibaba().isAutoInjectSkills()) {
+#         agentAdapter.injectSkills(agent);
+#     }
+#     
+#     return agent;
+# }

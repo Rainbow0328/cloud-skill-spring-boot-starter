@@ -13,222 +13,152 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.cloudskill.sdk.registry;
 
+import com.cloudskill.sdk.config.CloudSkillProperties;
 import cn.hutool.http.HttpRequest;
 import cn.hutool.http.HttpResponse;
-import com.cloudskill.sdk.config.CloudSkillProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.util.StringUtils;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
+
 import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 服务注册管理器
+ * 将当前 consumer 服务注册到 admin 平台
+ */
+@Slf4j
 public class ServiceRegistryManager implements DisposableBean {
     
-    private static final Logger log = LoggerFactory.getLogger(ServiceRegistryManager.class);
-    
     private final CloudSkillProperties properties;
-    private final ObjectMapper objectMapper;
     private final ScheduledExecutorService scheduler;
-    private String instanceId;
-    private volatile boolean registered = false;
+    private final ObjectMapper objectMapper;
+    private boolean started = false;
     
     public ServiceRegistryManager(CloudSkillProperties properties) {
         this.properties = properties;
-        this.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        this.objectMapper = new ObjectMapper();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "CloudSkill-Service-Registry");
-            t.setDaemon(true);
-            return t;
+            Thread thread = new Thread(r);
+            thread.setName("cloud-skill-registry-heartbeat");
+            thread.setDaemon(true);
+            return thread;
         });
-        
-        log.info("ServiceRegistryManager initialized, enableServiceRegistry: {}", properties.isEnableServiceRegistry());
-        
-        // 自动生成实例ID
-        if (!StringUtils.hasText(properties.getInstanceId())) {
-            this.instanceId = UUID.randomUUID().toString().replace("-", "");
-            properties.setInstanceId(this.instanceId);
-        } else {
-            this.instanceId = properties.getInstanceId();
-        }
-        
-        // 自动获取IP地址
-        if (!StringUtils.hasText(properties.getServiceIp())) {
-            try {
-                properties.setServiceIp(InetAddress.getLocalHost().getHostAddress());
-            } catch (UnknownHostException e) {
-                log.warn("Failed to get local IP address, using 127.0.0.1", e);
-                properties.setServiceIp("127.0.0.1");
-            }
-        }
-        
-        log.info("Service config: name={}, ip={}, port={}, version={}",
-                properties.getServiceName(),
-                properties.getServiceIp(),
-                properties.getServicePort(),
-                properties.getServiceVersion());
     }
     
     /**
      * 启动服务注册
      */
     public void start() {
-        log.info("Starting service registry...");
-        
         if (!properties.isEnableServiceRegistry()) {
-            log.info("Service registry is disabled, skipping...");
+            log.info("Service registry disabled, skipping registration");
             return;
         }
         
-        if (!StringUtils.hasText(properties.getServiceName())) {
-            log.warn("Service name is not configured, service registry disabled");
+        if (started) {
+            log.warn("Service registry already started");
             return;
         }
         
+        // 检查 serviceName 必须配置
+        if (properties.getServiceName() == null || properties.getServiceName().isEmpty()) {
+            throw new IllegalStateException(
+                "[CloudSkill] service-name is required when service-registry is enabled. " +
+                "Please configure cloud.skill.service-name (usually set to ${spring.application.name})"
+            );
+        }
+        
+        // 检查 servicePort 必须配置
         if (properties.getServicePort() == null) {
-            log.warn("Service port is not configured, service registry disabled");
-            return;
+            throw new IllegalStateException(
+                "[CloudSkill] service-port is required when service-registry is enabled. " +
+                "Please configure cloud.skill.service-port (usually set to ${server.port})"
+            );
         }
         
-        // 立即注册
-        register();
+        // 自动补全配置
+        autoCompleteConfig();
         
-        // 启动心跳任务
-        scheduler.scheduleAtFixedRate(this::sendHeartbeat, 
-                properties.getHeartbeatInterval(), 
-                properties.getHeartbeatInterval(), 
-                TimeUnit.SECONDS);
+        log.info("Starting service registry: serviceName={}, serviceVersion={}, heartbeatInterval={}",
+                properties.getServiceName(),
+                properties.getServiceVersion(),
+                properties.getHeartbeatInterval());
         
-        log.info("Service registry started, service: {}:{}:{}",
-                properties.getServiceName(), 
-                properties.getServiceIp(), 
-                properties.getServicePort());
+        scheduler.scheduleAtFixedRate(this::register, 0, properties.getHeartbeatInterval(), TimeUnit.SECONDS);
+        started = true;
+        log.info("Service registry started");
     }
     
     /**
-     * 注册服务
+     * 执行注册
      */
     private void register() {
         try {
-            String url = properties.getServerUrl() + "/cloud-skill/v1/registry/register";
+            String url = properties.getServerUrl() + "/cloud-skill/v1/registry/heartbeat";
             
-            Map<String, Object> requestBody = Map.of(
-                    "serviceName", properties.getServiceName(),
-                    "instanceId", instanceId,
-                    "ipAddress", properties.getServiceIp(),
-                    "port", properties.getServicePort(),
-                    "version", properties.getServiceVersion(),
-                    "metadata", Map.of()
-            );
+            Map<String, Object> body = new HashMap<>();
+            body.put("serviceName", properties.getServiceName());
+            body.put("serviceVersion", properties.getServiceVersion());
+            body.put("serviceIp", properties.getServiceIp());
+            body.put("servicePort", properties.getServicePort());
+            body.put("instanceId", properties.getInstanceId());
+            body.put("heartbeatInterval", properties.getHeartbeatInterval());
+            body.put("enabled", true);
+            
+            String jsonBody = objectMapper.writeValueAsString(body);
             
             HttpResponse response = HttpRequest.post(url)
-                    .header("X-API-Key", properties.getApiKey())
                     .header("Content-Type", "application/json")
-                    .body(objectMapper.writeValueAsString(requestBody))
-                    .timeout(5000)
+                    .header("X-API-Key", properties.getApiKey())
+                    .body(jsonBody)
+                    .timeout(10000)
                     .execute();
             
             if (response.isOk()) {
-                Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
-                if (Boolean.TRUE.equals(result.get("success"))) {
-                    registered = true;
-                    log.info("Service registered successfully, instanceId: {}", instanceId);
-                } else {
-                    log.error("Service registration failed: {}", result.get("message"));
-                }
+                log.debug("Heartbeat sent successfully: serviceName={}, instanceId={}",
+                        properties.getServiceName(), properties.getInstanceId());
             } else {
-                log.error("Service registration failed, status: {}, message: {}",
+                log.warn("Heartbeat failed: status={}, body={}",
                         response.getStatus(), response.body());
             }
         } catch (Exception e) {
-            log.error("Service registration error", e);
+            log.warn("Failed to send heartbeat: {}", e.getMessage());
         }
     }
     
     /**
-     * 发送心跳
+     * 自动补全配置
      */
-    private void sendHeartbeat() {
-        if (!registered) {
-            log.debug("Service not registered yet, trying to register...");
-            register();
-            return;
+    private void autoCompleteConfig() {
+        // 自动生成 instanceId
+        if (properties.getInstanceId() == null || properties.getInstanceId().isEmpty()) {
+            properties.setInstanceId(UUID.randomUUID().toString());
         }
         
-        try {
-            String url = properties.getServerUrl() + "/cloud-skill/v1/registry/heartbeat";
-            
-            Map<String, Object> requestBody = Map.of(
-                    "instanceId", instanceId
-            );
-            
-            HttpResponse response = HttpRequest.post(url)
-                    .header("X-API-Key", properties.getApiKey())
-                    .header("Content-Type", "application/json")
-                    .body(objectMapper.writeValueAsString(requestBody))
-                    .timeout(3000)
-                    .execute();
-            
-            if (!response.isOk()) {
-                log.warn("Heartbeat failed, status: {}", response.getStatus());
-                registered = false;
+        // 自动获取 IP
+        if (properties.getServiceIp() == null || properties.getServiceIp().isEmpty()) {
+            try {
+                InetAddress localhost = InetAddress.getLocalHost();
+                properties.setServiceIp(localhost.getHostAddress());
+            } catch (Exception e) {
+                log.warn("Failed to get local IP address: {}", e.getMessage());
+                properties.setServiceIp("127.0.0.1");
             }
-        } catch (Exception e) {
-            log.warn("Heartbeat error", e);
-            registered = false;
         }
     }
     
-    /**
-     * 服务下线
-     */
     @Override
     public void destroy() {
-        if (registered) {
-            try {
-                String url = properties.getServerUrl() + "/cloud-skill/v1/registry/deregister?instanceId=" + instanceId;
-                
-                HttpResponse response = HttpRequest.post(url)
-                        .header("X-API-Key", properties.getApiKey())
-                        .timeout(3000)
-                        .execute();
-                
-                if (response.isOk()) {
-                    log.info("Service deregistered successfully");
-                } else {
-                    log.warn("Service deregistration failed, status: {}", response.getStatus());
-                }
-            } catch (Exception e) {
-                log.warn("Service deregistration error", e);
-            }
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdown();
+            log.info("Service registry stopped");
         }
-        
-        scheduler.shutdown();
-        try {
-            if (!scheduler.awaitTermination(1, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-    
-    public boolean isRegistered() {
-        return registered;
-    }
-    
-    public String getInstanceId() {
-        return instanceId;
     }
 }
