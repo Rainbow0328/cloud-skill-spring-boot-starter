@@ -22,82 +22,72 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 技能缓存
- * 使用 ConcurrentHashMap 实现，支持过期清理
- * 新增：后台定时检查更新（基于时间戳）
+ * 使用 ConcurrentHashMap 实现，完全由admin统一管控生命周期
+ * 【无本地过期逻辑】：只有admin推送的删除/禁用消息才会修改缓存，本地永远不过期
  */
 @Slf4j
 public class SkillCache {
     
-    private final long expireTime; // 过期时间，单位秒
-    private final long checkInterval; // 后台检查间隔，单位毫秒
-    private final Map<String, CacheEntry> cache;
-    private final ScheduledExecutorService scheduler;
-    
-    public SkillCache(long expireTime) {
-        this(expireTime, 300000); // 默认 5 分钟检查一次
+    private final Map<Long, CacheEntry> cache;
+
+    /**
+     * 无参构造方法（推荐使用）
+     */
+    public SkillCache() {
+        this.cache = new ConcurrentHashMap<>();
+        log.info("Skill cache initialized, no local expiration, lifecycle managed by admin");
     }
     
+    /**
+     * 兼容旧版构造方法，参数忽略，仅保留向后兼容
+     * @deprecated 使用无参构造方法
+     */
+    @Deprecated
+    public SkillCache(long expireTime) {
+        this();
+        log.warn("SkillCache with expireTime parameter is deprecated, use no-arg constructor instead");
+    }
+    
+    /**
+     * 兼容旧版构造方法，参数忽略，仅保留向后兼容
+     * @deprecated 使用无参构造方法
+     */
+    @Deprecated
     public SkillCache(long expireTime, long checkInterval) {
-        this.expireTime = expireTime;
-        this.checkInterval = checkInterval;
-        this.cache = new ConcurrentHashMap<>();
-        
-        // 启动定时清理线程
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r);
-            thread.setName("cloud-skill-cache-cleaner");
-            thread.setDaemon(true);
-            return thread;
-        });
-        
-        // 每分钟清理一次过期缓存
-        this.scheduler.scheduleAtFixedRate(this::cleanExpired, 1, 1, TimeUnit.MINUTES);
-        
-        log.info("Skill cache initialized, expireTime: {}s, checkInterval: {}ms", expireTime, checkInterval);
+        this();
+        log.warn("SkillCache with expireTime and checkInterval parameters is deprecated, use no-arg constructor instead");
     }
     
     /**
      * 获取技能
+     * 【无本地过期判断】：技能有效性完全由admin管控，本地无条件返回
      */
-    public Skill get(String skillId) {
+    public Skill get(Long skillId) {
         CacheEntry entry = cache.get(skillId);
-        if (entry == null) {
-            return null;
-        }
-        
-        // 检查是否过期
-        if (System.currentTimeMillis() - entry.timestamp > expireTime * 1000) {
-            cache.remove(skillId);
-            return null;
-        }
-        
-        return entry.skill;
+        return entry != null ? entry.skill : null;
     }
     
     /**
      * 存入技能（带时间戳）
      */
-    public void put(String skillId, Skill skill, Long updateTimestamp) {
+    public void put(Long skillId, Skill skill, Long updateTimestamp) {
         cache.put(skillId, new CacheEntry(skill, System.currentTimeMillis(), updateTimestamp));
     }
     
     /**
      * 存入技能
      */
-    public void put(String skillId, Skill skill) {
+    public void put(Long skillId, Skill skill) {
         cache.put(skillId, new CacheEntry(skill, System.currentTimeMillis()));
     }
     
     /**
      * 移除技能
      */
-    public void remove(String skillId) {
+    public void remove(Long skillId) {
         cache.remove(skillId);
     }
     
@@ -125,7 +115,7 @@ public class SkillCache {
     /**
      * 获取所有缓存的技能
      */
-    public Map<String, Skill> getAll() {
+    public Map<Long, Skill> getAll() {
         return cache.entrySet().stream()
                 .collect(java.util.stream.Collectors.toMap(
                         Map.Entry::getKey,
@@ -136,70 +126,14 @@ public class SkillCache {
     /**
      * 获取原始缓存（公共访问）
      */
-    public Map<String, CacheEntry> getCache() {
+    public Map<Long, CacheEntry> getCache() {
         return cache;
-    }
-    
-    /**
-     * 清理过期缓存
-     */
-    private void cleanExpired() {
-        try {
-            long now = System.currentTimeMillis();
-            int beforeSize = cache.size();
-            
-            cache.entrySet().removeIf(entry -> 
-                    now - entry.getValue().timestamp > expireTime * 1000);
-            
-            int afterSize = cache.size();
-            if (beforeSize != afterSize) {
-                log.debug("Cleaned {} expired skill cache entries, remaining: {}", 
-                        beforeSize - afterSize, afterSize);
-            }
-        } catch (Exception e) {
-            log.warn("Failed to clean expired cache", e);
-        }
-    }
-    
-    /**
-     * 关闭缓存
-     */
-    public void shutdown() {
-        scheduler.shutdown();
-        try {
-            if (!scheduler.awaitTermination(1, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-    
-    /**
-     * 缓存条目（公共访问）
-     */
-    public static class CacheEntry {
-        private final Skill skill;
-        public final long timestamp; // 本地缓存时间
-        public Long updateTimestamp; // Redis 中的更新时间戳
-        
-        public CacheEntry(Skill skill, long timestamp) {
-            this.skill = skill;
-            this.timestamp = timestamp;
-        }
-        
-        public CacheEntry(Skill skill, long timestamp, Long updateTimestamp) {
-            this.skill = skill;
-            this.timestamp = timestamp;
-            this.updateTimestamp = updateTimestamp;
-        }
     }
     
     /**
      * 更新缓存条目的时间戳
      */
-    public void updateTimestamp(String skillId, Long updateTimestamp) {
+    public void updateTimestamp(Long skillId, Long updateTimestamp) {
         CacheEntry entry = cache.get(skillId);
         if (entry != null) {
             entry.updateTimestamp = updateTimestamp;
@@ -209,7 +143,7 @@ public class SkillCache {
     /**
      * 获取缓存条目的更新时间戳
      */
-    public Long getUpdateTimestamp(String skillId) {
+    public Long getUpdateTimestamp(Long skillId) {
         CacheEntry entry = cache.get(skillId);
         return entry != null ? entry.updateTimestamp : null;
     }
@@ -248,7 +182,7 @@ public class SkillCache {
      * 按 Provider ID 移除技能缓存
      */
     public void evictSkillsByProvider(String providerId) {
-        List<String> toRemove = new ArrayList<>();
+        List<Long> toRemove = new ArrayList<>();
         cache.forEach((skillId, entry) -> {
             if (providerId.equals(entry.skill.getProviderId())) {
                 toRemove.add(skillId);
@@ -272,8 +206,28 @@ public class SkillCache {
     /**
      * 移除技能（便捷方法）
      */
-    public void removeSkill(String skillId) {
+    public void removeSkill(Long skillId) {
         remove(skillId);
         log.debug("移除技能缓存：skillId={}", skillId);
+    }
+    
+    /**
+     * 缓存条目（公共访问）
+     */
+    public static class CacheEntry {
+        private final Skill skill;
+        public final long timestamp; // 本地缓存时间
+        public Long updateTimestamp; // Redis 中的更新时间戳
+        
+        public CacheEntry(Skill skill, long timestamp) {
+            this.skill = skill;
+            this.timestamp = timestamp;
+        }
+        
+        public CacheEntry(Skill skill, long timestamp, Long updateTimestamp) {
+            this.skill = skill;
+            this.timestamp = timestamp;
+            this.updateTimestamp = updateTimestamp;
+        }
     }
 }

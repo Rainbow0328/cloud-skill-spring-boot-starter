@@ -17,22 +17,15 @@ package com.cloudskill.sdk.agent.annotation;
 import java.lang.annotation.*;
 
 /**
- * 启用动态技能注入
- * 可以标注在类或方法上，细粒度控制是否启用动态技能注入
- * 全局默认由配置文件控制：cloud.skill.dynamic-skills.enabled
- *
+ * 动态技能开关注解
  * 优先级：方法注解 > 类注解 > 全局配置
- *
- * @author Cloud Skill Team
- * @version 1.0.0
  */
-@Target({ElementType.TYPE, ElementType.METHOD})
+@Target({ElementType.METHOD, ElementType.TYPE})
 @Retention(RetentionPolicy.RUNTIME)
+@Documented
 public @interface EnableDynamicSkills {
-
     /**
      * 是否启用动态技能注入
-     * @return true启用，false禁用
      */
     boolean value() default true;
 }

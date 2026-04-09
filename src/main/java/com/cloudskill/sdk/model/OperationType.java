@@ -54,6 +54,11 @@ public enum OperationType {
      * 技能创建
      */
     CREATE,
+
+    /**
+     * 服务技能分配关系发生批量变化（汇总事件）
+     */
+    SERVICE_ASSIGNMENTS_CHANGED,
     
     /**
      * 技能删除

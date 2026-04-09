@@ -14,6 +14,7 @@
  */
 package com.cloudskill.sdk.listener;
 
+import com.cloudskill.sdk.agent.ToolCache;
 import com.cloudskill.sdk.core.CloudSkillClient;
 import com.cloudskill.sdk.core.SkillCache;
 import com.cloudskill.sdk.model.SkillChangeMessage;
@@ -56,8 +57,9 @@ public class RedisSkillChangeListener extends AbstractSkillChangeListener implem
                                       RedisMessageListenerContainer redisMessageListenerContainer,
                                       ScheduledExecutorService scheduledExecutor,
                                       CloudSkillClient cloudSkillClient,
+                                      ToolCache toolCache,
                                       Environment environment) {
-        super(objectMapper, skillCache, cloudSkillClient, environment, scheduledExecutor);
+        super(objectMapper, skillCache, cloudSkillClient, toolCache, environment, scheduledExecutor);
         this.redisTemplate = redisTemplate;
         this.redisMessageListenerContainer = redisMessageListenerContainer;
     }

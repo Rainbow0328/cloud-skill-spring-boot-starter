@@ -17,6 +17,8 @@ package com.cloudskill.sdk.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +29,8 @@ import java.util.Map;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Skill {
-    private String id;
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long id;
     private String name;
     private String description;
     private String category;
@@ -64,7 +67,7 @@ public class Skill {
     private String sourcePath; // 技能来源路径（如 URL 路径、类名。方法名等）
 
     // Getter methods
-    public String getId() { return id; }
+    public Long getId() { return id; }
     public String getName() { return name; }
     public String getDescription() { return description; }
     public String getCategory() { return category; }
@@ -85,7 +88,7 @@ public class Skill {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
 
     // Setter methods
-    public void setId(String id) { this.id = id; }
+    public void setId(Long id) { this.id = id; }
     public void setName(String name) { this.name = name; }
     public void setDescription(String description) { this.description = description; }
     public void setCategory(String category) { this.category = category; }

@@ -28,7 +28,7 @@
 
 ## Overview
 
-cloud-skill-spring-boot-starter is a cloud-native skill management platform client toolkit based on the MCP (Model Control Protocol) protocol, which enables complete decoupling between AI applications and tool capabilities. Through standardized protocols and automated integration mechanisms, Spring AI applications can **dynamically call remotely registered tool skills** without hardcoding tool implementations,彻底解决传统AI应用中工具函数硬编码、重复开发、难以运维的痛点。
+cloud-skill-spring-boot-starter is a Spring Boot client for the Cloud Skill management platform. It talks to the admin server over HTTP, decoupling AI applications from tool implementations. Through unified skill metadata and automated integration, Spring AI applications can **dynamically call remotely registered tool skills** without hardcoding implementations, reducing duplication and operational overhead.
 
 ### Design Philosophy
 - **Zero-intrusion Integration**: Based on Spring Boot auto-configuration, no modification to existing business code required
@@ -120,7 +120,7 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 │  └───────────────────────────────────────────────────────────────────────┘    │
 │                               │                                               │
 │  ┌───────────────────────────────────────────────────────────────────────┐    │
-│  │                         Mcp Skill Manager                             │    │
+│  │                      CloudSkillToolManager                            │    │
 │  └───────────────────────────────────────────────────────────────────────┘    │
 │                               │                                               │
 │  ┌───────────────────────────────────────────────────────────────────────┐    │
@@ -136,7 +136,7 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
                                     │
                                     ▼
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│                          MCP Cloud Skill Server                               │
+│                       Cloud Skill Admin (control plane)                        │
 │                                                                               │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────────────┐  │
 │  │ Skill Management │  │ Permission Control│  │ Service Registry & Discovery│ │
@@ -150,13 +150,47 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 ### Core Component Layering
 
 #### Injection Architecture (Inject tools into AI model)
+
+**Core Design**: Fully leverage Spring AI native interfaces, use AOP + ThreadLocal optimization to avoid duplicate injection.
+
 | Layer | Component | Responsibility |
 |-------|-----------|----------------|
 | Annotation | `@EnableDynamicSkills` | Fine-grained enable/disable control, supports class and method |
-| AOP Aspect | `DynamicSkillsAdvisor` | Pointcut matching, only intercept when all conditions are met |
-| Abstract Base | `AbstractToolInjector` | Template method, unified processing: version check + tool injection |
-| Concrete Implementation | `ChatModelToolInjector` | ChatModel scenario specific implementation, intercepts `call(Prompt)` |
-| Management Layer | `McpSkillManager` | Skill conversion Skill → ToolCallback, refresh tool list |
+| AOP Aspect | `DynamicSkillInjectAspect` | Three coordinated advices: <ul><li>`aroundAnnotatedMethod`: Works with annotations, marks whether injection is needed via ThreadLocal</li><li>`aroundChatClientBuild`: Intercepts `ChatClient.Builder.build()`, marks **already injected**</li><li>`aroundChatModelCall`: Intercepts `ChatModel.call()`, only enhances if not injected</li></ul> |
+| Abstract Enhancement | `AbstractDynamicSkillToolEnhancement` | Skeleton implementation: extract existing tools → merge & deduplicate → inject into Prompt via reflection |
+| Management Layer | `CloudSkillToolManager` | Skill conversion Skill → ToolCallback, refresh tool list |
+| Deduplication Merge | `ToolCallbackMergeSupport` | Smart merge, deduplicate by name, prefer user-defined tools |
+
+#### Complete ChatClient Injection Flow (Default Enabled)
+
+```
+Startup:
+├─ Register ChatClientCustomizer in Spring container
+└─ Automatically holds dynamic skill ToolCallbackProvider
+
+Business - Build ChatClient:
+1. Business calls ChatClient.Builder.build()
+2. DynamicSkillInjectAspect.aroundChatClientBuild intercepts
+   → Always set ALREADY_INJECTED_IN_BUILD = true (Thread-local)
+   → Spring AI internally calls ChatClientCustomizer
+   → Automatically adds dynamic skills to builder.defaultToolCallbacks()
+3. build completes and returns ChatClient
+   → Thread-local keeps the mark for next phase to read
+
+Business - ChatClient Chat:
+1. chatClient.call() internally assembles Prompt with defaultToolCallbacks
+2. Internally calls ChatModel.call(prompt)
+3. DynamicSkillInjectAspect.aroundChatModelCall intercepts
+   → Reads ALREADY_INJECTED_IN_BUILD = true
+   → Skips enhancement directly, uses native call
+   → finally forces remove Thread-local, exits cleanly
+```
+
+**Design Advantages**:
+- ✅ Follows Spring AI native specification, uses official interface for injection for optimal performance
+- ✅ Thread-local marking guarantees "one build, one skip", completely avoiding duplicate injection
+- ✅ Automatic cleanup after call, no memory leak risk
+- ✅ Fully compatible with distributed scenarios, Thread-local is only valid for the current calling thread
 
 #### Listening Architecture (Skill change notification)
 | Layer | Component | Responsibility |
@@ -168,22 +202,26 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 #### Core Services
 | Layer | Component | Responsibility |
 |-------|-----------|----------------|
-| Communication Layer | `CloudSkillClient` | Communicate with MCP server, HTTP call, get global timestamp, full sync |
+| Communication Layer | `CloudSkillClient` | HTTP client to admin, global timestamp, full sync |
 | Scheduled Task | `SkillSyncTask` | Scheduled synchronization task, ensures eventual consistency |
 | Scheduled Task | `SkillCacheRefresher` | Cache refresh, check expiration |
 | SPI Extension | `SkillConverter` | Custom skill converter |
 | SPI Extension | `SkillExecutionHook` | Skill call hook, pre/post processing |
 
 ### Core Workflow
-1. **Startup Initialization**: Automatically registers with MCP server on application startup, synchronizes full skill metadata
+1. **Startup Initialization**: Connects to the admin server on startup and synchronizes full skill metadata
 2. **Local Caching**: Skill metadata is cached in local memory, supporting millisecond-level access
 3. **Real-time Updates**: Receives skill change events through Redis publish/subscribe, updates local cache in real-time
-4. **Version Check**: Before each ChatModel call, compare local timestamp with Redis global timestamp
-5. **Auto Sync**: If local version is expired, automatically trigger full synchronization, inject after updating cache
-6. **Call Interception**: AOP intercepts ChatModel calls, automatically injects available skill lists into Prompt
-7. **Route Execution**: When AI Agent calls tools, automatically routes to MCP server for execution
-8. **Result Return**: Execution results are converted and returned to AI Agent, completing the call process
-9. **Monitoring Statistics**: Full-link recording of call logs, performance indicators, and reporting to monitoring platform
+4. **ChatClient Building**: `ChatClient.Builder.build()` is intercepted by AOP, Thread-local marks as already injected
+   - Spring AI automatically injects dynamic skills into `defaultToolCallbacks` via `ChatClientCustomizer`
+5. **Chat Conversation**: `chatClient.call()` → internally calls `ChatModel.call()`
+   - AOP interception reads the mark → finds already injected → skips enhancement directly, native call → cleans up Thread-local
+6. **Version Check**: If calling ChatModel directly (not via ChatClient), compare local timestamp with Redis global timestamp before each call
+7. **Auto Sync**: If local version is expired, automatically trigger full synchronization, inject after updating cache
+8. **Call Interception**: AOP intercepts ChatModel calls, automatically merges and injects available skill lists into Prompt
+9. **Route Execution**: When the AI Agent calls tools, the SDK invokes the Provider over HTTP per skill configuration
+10. **Result Return**: Execution results are converted and returned to AI Agent, completing the call process
+11. **Monitoring Statistics**: Full-link recording of call logs, performance indicators, and reporting to monitoring platform
 
 ---
 
@@ -196,7 +234,7 @@ cloud-skill-spring-boot-starter is a cloud-native skill management platform clie
 | Spring Boot | 3.2.0+ | Developed based on Spring Boot 3.x new features |
 | Spring AI | 1.0.0-M4+ | Compatible with official Spring AI versions |
 | Maven | 3.8.0+ | Latest stable version recommended |
-| MCP Server | 1.0.0+ | Cloud skill management server |
+| Cloud Skill Admin | 1.0.0+ | Cloud skill management server |
 
 ### Step 1: Add Dependencies
 ```xml
@@ -224,7 +262,7 @@ cloud:
   skill:
     # Basic Configuration
     enabled: true
-    server-url: https://mcp.yourcompany.com  # MCP server address
+    server-url: https://cloud-skill-admin.yourcompany.com  # Admin base URL
     api-key: ${CLOUD_SKILL_API_KEY}          # Read API Key from environment variable to avoid hardcoding
     service-name: ${spring.application.name} # Service name, defaults to Spring application name
     service-version: 1.0.0                   # Service version
@@ -381,7 +419,7 @@ public class CustomerServiceAgent {
 
 #### Scenario 3: Manual Skill List Management
 ```java
-import com.cloudskill.sdk.agent.McpSkillManager;
+import com.cloudskill.sdk.agent.CloudSkillToolManager;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -392,7 +430,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class CustomAgentController {
 
     @Autowired
-    private McpSkillManager mcpSkillManager;
+    private CloudSkillToolManager cloudSkillToolManager;
 
     @Autowired
     private ChatClient chatClient;
@@ -401,9 +439,7 @@ public class CustomAgentController {
     public String customChat(@RequestParam String message, @RequestParam String scene) {
         // Dynamically select skills based on business scenario
         var skills = switch (scene) {
-            case "customer-service" -> mcpSkillManager.getSkillToolsByCategory("customer-service");
-            case "data-analysis" -> mcpSkillManager.getSkillToolsByTag("data", "analysis");
-            default -> mcpSkillManager.getSkillTools();
+            default -> cloudSkillToolManager.getSkillTools();
         };
 
         return chatClient.prompt()
@@ -570,7 +606,7 @@ public class SkillContextInterceptor implements HandlerInterceptor {
 | Configuration Item | Type | Default Value | Description |
 |---------------------|------|---------------|-------------|
 | `cloudskill.sdk.enabled` | Boolean | `true` | Whether to enable Cloud Skill SDK |
-| `cloudskill.sdk.server-url` | String | `http://localhost:8080` | MCP server access address |
+| `cloudskill.sdk.server-url` | String | `http://localhost:8080` | Cloud Skill admin base URL |
 | `cloudskill.sdk.api-key` | String | - | API authentication key, required |
 | `cloudskill.sdk.service-name` | String | `${spring.application.name}` | Current service name, required for service registration |
 | `cloudskill.sdk.service-version` | String | `1.0.0` | Current service version number |
@@ -604,9 +640,9 @@ public class SkillContextInterceptor implements HandlerInterceptor {
 ## Best Practices
 
 ### Deployment Recommendations
-1. **Environment Isolation**: Use independent MCP clusters and API Keys for development, testing, and production environments
+1. **Environment Isolation**: Use separate admin deployments and API Keys for development, testing, and production
 2. **Network Optimization**: Use intranet communication between SDK and server to reduce latency and network fluctuation impacts
-3. **High Availability Deployment**: Deploy MCP server in cluster with load balancer in front
+3. **High Availability Deployment**: Run the admin tier behind a load balancer in clustered setups
 4. **Configuration Management**: Use configuration center or environment variables for sensitive configurations (e.g., API Key) to avoid hardcoding
 5. **Gray Release**: Gradually roll out new SDK versions to a small subset of applications first, then full rollout after verification
 
@@ -622,7 +658,7 @@ public class SkillContextInterceptor implements HandlerInterceptor {
 2. **Parameter Verification**: Perform secondary parameter verification on the server side for sensitive skills to prevent injection attacks
 3. **Data Desensitization**: Automatically desensitize sensitive information (e.g., phone numbers, ID numbers) in skill return results
 4. **Audit Logging**: Enable detailed audit logs for important skill calls, retain for at least 6 months
-5. **Access Control**: Configure IP whitelists on MCP server to allow only trusted service addresses to access
+5. **Access Control**: Configure IP allowlists on the admin tier so only trusted callers reach the API
 
 ### Operations & Monitoring
 1. **Core Metrics Monitoring**:
@@ -650,7 +686,7 @@ public class SkillContextInterceptor implements HandlerInterceptor {
 **Troubleshooting Steps:**
 1. Verify that the API Key is correct and has permission to access skills
 2. Check if skills have been assigned to this API Key on the server side
-3. Ensure network connectivity to MCP server's `/cloud-skill/v1/skills` endpoint
+3. Ensure network connectivity to the admin `/cloud-skill/v1/skills` endpoint
 4. Enable debug mode to view detailed error information in synchronization logs
 5. Verify that skills returned by the server meet permission conditions (public or assigned to current service)
 
@@ -668,14 +704,25 @@ public class SkillContextInterceptor implements HandlerInterceptor {
 2. In annotation mode, confirm target method or class is annotated with `@EnableDynamicSkills`
 3. Ensure Spring AI dependencies are included in the project and ChatModel is a Spring-managed bean
 4. Check if other AOP aspects have higher priority, adjust `dynamic-skills.order` to change execution order
-5. View startup logs to confirm `DynamicSkillsAdvisor` was successfully initialized
+5. View startup logs to confirm `DynamicSkillInjectAspect` was successfully initialized
+
+#### Q: Why don't I see any logs from DynamicSkillInjectAspect in production?
+**Answer:** This is expected. All non-critical logs have been downgraded to debug level. Enable debug logging to see detailed flow:
+```yaml
+logging:
+  level:
+    com.cloudskill.sdk.agent: debug
+```
+
+#### Q: Can duplicate injection of dynamic skills happen?
+**Answer:** No. With the `ALREADY_INJECTED_IN_BUILD` Thread-local marker, after ChatClient injection ChatModel will skip directly, guaranteeing only one injection.
 
 #### Q: Skill calls frequently time out?
 **Optimization Solutions:**
 1. Increase `call-timeout` configuration appropriately based on actual skill execution time
 2. Investigate server performance bottlenecks and optimize skill execution efficiency
 3. Use asynchronous call patterns for long-running skills
-4. Check network bandwidth and latency, consider deploying MCP server closer to applications
+4. Check network bandwidth and latency; place admin and providers close to consumers when possible
 5. Enable retry mechanism by adjusting `retry-count` configuration
 
 #### Q: Performance degradation under high concurrency?

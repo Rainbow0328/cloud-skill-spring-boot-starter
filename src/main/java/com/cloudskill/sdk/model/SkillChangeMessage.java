@@ -64,7 +64,7 @@ public class SkillChangeMessage {
     /**
      * 技能 ID（取消分配使用）
      */
-    private String skillId;
+    private Long skillId;
     
     /**
      * 服务名称（取消分配使用）
@@ -152,11 +152,11 @@ public class SkillChangeMessage {
         this.assignedServices = assignedServices;
     }
     
-    public String getSkillId() {
+    public Long getSkillId() {
         return skillId;
     }
     
-    public void setSkillId(String skillId) {
+    public void setSkillId(Long skillId) {
         this.skillId = skillId;
     }
     

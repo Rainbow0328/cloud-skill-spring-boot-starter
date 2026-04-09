@@ -52,14 +52,14 @@ public class SkillMetrics {
     /**
      * 记录技能调用
      */
-    public void recordSkillInvoke(String skillId, boolean success, long durationMs, String errorCode) {
+    public void recordSkillInvoke(Long skillId, boolean success, long durationMs, String errorCode) {
         if (!metricsEnabled) {
             return;
         }
         
         // 计数
         Counter.builder(SKILL_INVOKE_TOTAL)
-                .tag("skillId", skillId)
+                .tag("skillId", skillId.toString())
                 .tag("result", success ? "success" : "failure")
                 .tag("errorCode", StringUtils.hasText(errorCode) ? errorCode : "none")
                 .register(meterRegistry)
@@ -67,7 +67,7 @@ public class SkillMetrics {
         
         // 耗时
         Timer.builder(SKILL_INVOKE_DURATION)
-                .tag("skillId", skillId)
+                .tag("skillId", skillId.toString())
                 .tag("result", success ? "success" : "failure")
                 .register(meterRegistry)
                 .record(durationMs, TimeUnit.MILLISECONDS);

@@ -14,11 +14,10 @@
  */
 package com.cloudskill.sdk.autoconfigure;
 
-import com.cloudskill.sdk.agent.McpSkillManager;
-import com.cloudskill.sdk.agent.alibaba.SpringAiAlibabaAgentAdapter;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.cloudskill.sdk.agent.CloudSkillToolCallbackProvider;
+import com.cloudskill.sdk.agent.ToolCache;
 import com.cloudskill.sdk.config.CloudSkillProperties;
-import com.cloudskill.sdk.spi.SkillConverter;
-import com.cloudskill.sdk.spi.SkillExecutionHook;
 import com.cloudskill.sdk.core.CloudSkillClient;
 import com.cloudskill.sdk.core.SkillCache;
 import com.cloudskill.sdk.core.metrics.SkillMetrics;
@@ -29,7 +28,6 @@ import com.cloudskill.sdk.task.SkillSyncTask;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -42,7 +40,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-import java.util.List;
 import jakarta.annotation.PostConstruct;
 import org.springframework.core.env.Environment;
 
@@ -53,12 +50,12 @@ import org.springframework.core.env.Environment;
 @ConditionalOnClass(CloudSkillClient.class)
 @EnableScheduling
 public class CloudSkillAutoConfiguration {
-    
+
     private Integer serverPort;
-    
+
     @jakarta.annotation.Resource
     private Environment environment;
-    
+
     @PostConstruct
     public void init() {
         if (serverPort == null) {
@@ -68,31 +65,30 @@ public class CloudSkillAutoConfiguration {
             }
         }
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnClass(MeterRegistry.class)
     public SkillMetrics skillMetrics(ObjectProvider<MeterRegistry> meterRegistryProvider) {
         return new SkillMetrics(meterRegistryProvider.getIfAvailable());
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
-    public CloudSkillClient cloudSkillClient(CloudSkillProperties properties, 
+    public CloudSkillClient cloudSkillClient(CloudSkillProperties properties,
                                             SkillCache skillCache,
                                             Environment environment) {
         // 自动注入服务端口
         if (properties.getServicePort() == null && properties.isEnableServiceRegistry()) {
             properties.setServicePort(serverPort);
         }
-        
         // 如果没有配置 serviceName，默认使用 spring.application.name
         if (properties.getServiceName() == null || properties.getServiceName().isEmpty()) {
             String appName = environment.getProperty("spring.application.name", "unknown-application");
             properties.setServiceName(appName);
             log.info("Auto-set serviceName from spring.application.name: {}", appName);
         }
-        
+
         // 调试日志：打印配置属性
         log.info("=== CloudSkillProperties Debug ===");
         log.info("enableServiceRegistry: {}", properties.isEnableServiceRegistry());
@@ -101,36 +97,36 @@ public class CloudSkillAutoConfiguration {
         log.info("serverUrl: {}", properties.getServerUrl());
         log.info("apiKey: {}", properties.getApiKey() != null ? "[masked]" : "null");
         log.info("==============================");
-        
+
         return new CloudSkillClient(properties, skillCache);
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-local-cache", havingValue = "true", matchIfMissing = true)
     public SkillCache skillCache(CloudSkillProperties properties) {
-        return new SkillCache(
-            properties.getCacheExpireTime(),
-            properties.getCacheCheckInterval()
-        );
+        return new SkillCache();
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "cloud.skill", name = "auto-sync", havingValue = "true", matchIfMissing = true)
-    public SkillSyncTask skillSyncTask(CloudSkillClient cloudSkillClient) {
-        return new SkillSyncTask(cloudSkillClient);
+    public SkillSyncTask skillSyncTask(CloudSkillClient cloudSkillClient,
+                                       SkillCache skillCache,
+                                       ToolCache toolCache) {
+        return new SkillSyncTask(cloudSkillClient, skillCache, toolCache);
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-local-cache", havingValue = "true", matchIfMissing = true)
-    public SkillCacheRefresher skillCacheRefresher(SkillCache skillCache, 
+    public SkillCacheRefresher skillCacheRefresher(SkillCache skillCache,
                                                     CloudSkillClient cloudSkillClient,
-                                                    CloudSkillProperties properties) {
-        return new SkillCacheRefresher(skillCache, cloudSkillClient, properties);
+                                                    CloudSkillProperties properties,
+                                                    ToolCache toolCache) {
+        return new SkillCacheRefresher(skillCache, cloudSkillClient, properties, toolCache);
     }
-    
+
     @Bean
     @ConditionalOnMissingBean
     public ServiceRegistryManager serviceRegistryManager(CloudSkillProperties properties) {
@@ -144,7 +140,7 @@ public class CloudSkillAutoConfiguration {
         }
         return registryManager;
     }
-    
+
     /**
      * 配置 Redis 消息监听器容器（仅在应用未定义时创建）
      */
@@ -156,7 +152,7 @@ public class CloudSkillAutoConfiguration {
         log.info("RedisMessageListenerContainer configured");
         return container;
     }
-    
+
     /**
      * 配置技能变更监听器（仅在应用未定义时创建）
      * 使用 Redis 实现
@@ -170,14 +166,15 @@ public class CloudSkillAutoConfiguration {
             SkillCache skillCache,
             RedisMessageListenerContainer redisMessageListenerContainer,
             CloudSkillClient cloudSkillClient,
+            ToolCache toolCache,
             Environment environment) {
-        
+
         log.info("Configuring RedisSkillChangeListener for real-time skill change notification");
-        
+
         // 创建定时任务调度器
-        java.util.concurrent.ScheduledExecutorService scheduler = 
+        java.util.concurrent.ScheduledExecutorService scheduler =
             java.util.concurrent.Executors.newScheduledThreadPool(2);
-        
+
         // 创建监听器
         RedisSkillChangeListener listener = new RedisSkillChangeListener(
             redisTemplate,
@@ -186,12 +183,13 @@ public class CloudSkillAutoConfiguration {
             redisMessageListenerContainer,
             scheduler,
             cloudSkillClient,
+            toolCache,
             environment
         );
-        
+
         // 订阅频道
         listener.subscribe();
-        
+
         return listener;
     }
     
@@ -204,38 +202,4 @@ public class CloudSkillAutoConfiguration {
         return new ObjectMapper();
     }
     
-    /**
-     * 注册 MCP 技能管理器，提供动态技能的加载和管理
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnClass(ToolCallback.class)
-    @ConditionalOnProperty(prefix = "cloud.skill", name = "enable-agent-integration", havingValue = "true", matchIfMissing = true)
-    public McpSkillManager mcpSkillManager(CloudSkillClient cloudSkillClient) {
-        log.info("Initializing McpSkillManager for dynamic skill management");
-        return new McpSkillManager(cloudSkillClient);
-    }
-    
-
-    
-    /**
-     * Spring AI Alibaba Agent 适配器，支持 ReactAgent 动态技能注入
-     */
-    @Bean
-    @ConditionalOnClass(name = "com.alibaba.cloud.ai.graph.agent.ReactAgent")
-    @ConditionalOnProperty(prefix = "cloud.skill.alibaba", name = "enable-agent-support", havingValue = "true", matchIfMissing = true)
-    public SpringAiAlibabaAgentAdapter springAiAlibabaAgentAdapter(
-            CloudSkillClient cloudSkillClient,
-            CloudSkillProperties properties,
-            ObjectProvider<List<SkillConverter>> convertersProvider,
-            ObjectProvider<List<SkillExecutionHook>> hooksProvider) {
-        
-        log.info("Initializing SpringAiAlibabaAgentAdapter for ReactAgent support");
-        return new SpringAiAlibabaAgentAdapter(
-                cloudSkillClient,
-                properties,
-                convertersProvider,
-                hooksProvider
-        );
-    }
 }

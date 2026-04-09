@@ -14,6 +14,8 @@
  */
 package com.cloudskill.sdk.listener;
 
+import com.cloudskill.sdk.agent.ToolCache;
+import com.cloudskill.sdk.cache.GlobalCacheVersion;
 import com.cloudskill.sdk.core.CloudSkillClient;
 import com.cloudskill.sdk.core.SkillCache;
 import com.cloudskill.sdk.model.SkillChangeMessage;
@@ -46,6 +48,7 @@ public abstract class AbstractSkillChangeListener {
     protected final ObjectMapper objectMapper;
     protected final SkillCache skillCache;
     protected final CloudSkillClient cloudSkillClient;
+    protected final ToolCache toolCache;
     protected final Environment environment;
     protected final ScheduledExecutorService scheduledExecutor;
 
@@ -57,11 +60,13 @@ public abstract class AbstractSkillChangeListener {
     public AbstractSkillChangeListener(ObjectMapper objectMapper,
                                       SkillCache skillCache,
                                       CloudSkillClient cloudSkillClient,
+                                      ToolCache toolCache,
                                       Environment environment,
                                       ScheduledExecutorService scheduledExecutor) {
         this.objectMapper = objectMapper;
         this.skillCache = skillCache;
         this.cloudSkillClient = cloudSkillClient;
+        this.toolCache = toolCache;
         this.environment = environment;
         this.scheduledExecutor = scheduledExecutor;
     }
@@ -74,14 +79,14 @@ public abstract class AbstractSkillChangeListener {
      */
     protected void handleMessage(SkillChangeMessage message) {
         try {
-            log.info("收到技能变更消息：type={}, version={}, previousVersion={}",
+            log.info("Received skill change message: type={}, version={}, previousVersion={}",
                     message.getOperationType(),
                     message.getTimestamp(),
                     message.getPreviousTimestamp());
 
             // 版本连续性校验
             if (!validateVersionContinuity(message)) {
-                log.warn("版本不连续，触发全量同步：expectedVersion={}, receivedVersion={}",
+                log.warn("Version discontinuity detected, triggering full sync: expectedVersion={}, receivedVersion={}",
                         localTimestamp, message.getPreviousTimestamp());
                 triggerFullSync();
                 return;
@@ -94,7 +99,7 @@ public abstract class AbstractSkillChangeListener {
             localTimestamp = message.getTimestamp();
 
         } catch (Exception e) {
-            log.error("处理技能变更消息失败", e);
+            log.error("Failed to process skill change message", e);
         }
     }
 
@@ -139,7 +144,7 @@ public abstract class AbstractSkillChangeListener {
                 break;
 
             default:
-                log.warn("未知的操作类型：{}", message.getOperationType());
+                log.warn("Unknown operation type: {}", message.getOperationType());
         }
     }
 
@@ -152,7 +157,16 @@ public abstract class AbstractSkillChangeListener {
         scheduleTask(() -> {
             // 标记该 Provider 的所有技能为不可用
             skillCache.setProviderStatus(providerId, "unavailable");
-            log.info("Provider 下线标记完成：providerId={}", providerId);
+            // 原子更新双缓存，保证一致性
+            synchronized (this) {
+                // SkillCache已更新，批量移除该Provider的工具
+                toolCache.removeSkillsByProvider(providerId);
+                // 版本更新为消息携带的admin全局版本（后续需要从消息中获取admin版本）
+                // 临时实现，后续会从消息体中提取admin返回的globalVersion
+                long adminGlobalVersion = System.currentTimeMillis();
+                GlobalCacheVersion.update(adminGlobalVersion);
+            }
+            log.info("Provider marked unavailable: providerId={}", providerId);
         }, 0, 5000);
     }
 
@@ -165,10 +179,16 @@ public abstract class AbstractSkillChangeListener {
         scheduleTask(() -> {
             // 清除 Provider 的不可用标记
             skillCache.removeProviderStatus(providerId);
-            log.info("Provider 恢复标记清除：providerId={}", providerId);
-
-            // 等待分配消息
-            log.info("等待技能分配消息...");
+            // 原子更新双缓存，保证一致性
+            synchronized (this) {
+                // Provider 恢复需要全量刷新，因为不知道具体哪些技能恢复了
+                toolCache.refreshCache();
+                // 版本更新为消息携带的admin全局版本（后续需要从消息中获取admin版本）
+                // 临时实现，后续会从消息体中提取admin返回的globalVersion
+                long adminGlobalVersion = System.currentTimeMillis();
+                GlobalCacheVersion.update(adminGlobalVersion);
+            }
+            log.info("Provider recovery applied: providerId={}", providerId);
         }, 0, 5000);
     }
 
@@ -182,10 +202,16 @@ public abstract class AbstractSkillChangeListener {
         scheduleTask(() -> {
             // 清理该 Provider 的所有技能缓存
             skillCache.evictSkillsByProvider(providerId);
-            log.info("Provider 全量更新缓存清理完成：providerId={}, scopes={}", providerId, scopes);
-
-            // 等待分配消息
-            log.info("等待新技能分配...");
+            // 原子更新双缓存，保证一致性
+            synchronized (this) {
+                // SkillCache已更新，刷新ToolCache
+                toolCache.refreshCache();
+                // 版本更新为消息携带的admin全局版本（后续需要从消息中获取admin版本）
+                // 临时实现，后续会从消息体中提取admin返回的globalVersion
+                long adminGlobalVersion = System.currentTimeMillis();
+                GlobalCacheVersion.update(adminGlobalVersion);
+            }
+            log.info("Provider full-reload cache cleanup completed: providerId={}, scopes={}", providerId, scopes);
         }, 0, 5000);
     }
 
@@ -198,7 +224,9 @@ public abstract class AbstractSkillChangeListener {
         scheduleTask(() -> {
             // 清理该 Provider 的所有技能缓存
             skillCache.evictSkillsByProvider(providerId);
-            log.info("Provider 技能批量删除完成：providerId={}", providerId);
+            // Provider 批量删除，批量移除工具缓存
+            toolCache.removeSkillsByProvider(providerId);
+            log.info("Provider skills removed from cache: providerId={}", providerId);
         }, 0, 5000);
     }
 
@@ -214,7 +242,15 @@ public abstract class AbstractSkillChangeListener {
             String currentServiceName = getCurrentServiceName();
             if (assignedServices != null && isServiceMatched(currentServiceName, assignedServices)) {
                 skillCache.putSkill(skill);
-                log.info("技能信息更新：skillId={}", skill.getId());
+                // 原子更新双缓存，保证一致性
+                synchronized (this) {
+                    // SkillCache已更新，增量更新单个技能
+                    toolCache.updateSkill(skill.getId());
+                    // 全局版本号递增，所有缓存自动失效
+                    // 临时使用时间戳作为admin版本，后续从消息中获取真实版本
+                GlobalCacheVersion.update(System.currentTimeMillis());
+                }
+                log.info("Skill updated in local cache: skillId={}", skill.getId());
             }
         }, 0, 5000);
     }
@@ -234,7 +270,14 @@ public abstract class AbstractSkillChangeListener {
 
         scheduleTask(() -> {
             skillCache.putSkill(skill);
-            log.info("技能分配同步完成：skillId={}", skill.getId());
+            // 原子更新双缓存，保证一致性
+            synchronized (this) {
+                // 增量更新单个技能
+                toolCache.updateSkill(skill.getId());
+                long adminGlobalVersion = System.currentTimeMillis();
+                GlobalCacheVersion.update(adminGlobalVersion);
+            }
+            log.info("Skill assignment synced: skillId={}", skill.getId());
         }, 0, 3000);
     }
 
@@ -242,7 +285,7 @@ public abstract class AbstractSkillChangeListener {
      * 处理技能取消分配
      */
     private void handleUnassign(SkillChangeMessage message) {
-        String skillId = message.getSkillId();
+        Long skillId = message.getSkillId();
         String serviceName = message.getServiceName();
 
         // 使用服务名称进行校验
@@ -253,7 +296,14 @@ public abstract class AbstractSkillChangeListener {
 
         scheduleTask(() -> {
             skillCache.removeSkill(skillId);
-            log.info("技能取消分配：skillId={}", skillId);
+            // 原子更新双缓存，保证一致性
+            synchronized (this) {
+                // 增量移除单个技能
+                toolCache.removeSkill(skillId);
+                long adminGlobalVersion = System.currentTimeMillis();
+                GlobalCacheVersion.update(adminGlobalVersion);
+            }
+            log.info("Skill unassigned: skillId={}", skillId);
         }, 0, 3000);
     }
 
@@ -262,21 +312,29 @@ public abstract class AbstractSkillChangeListener {
      */
     private void triggerFullSync() {
         scheduleTask(() -> {
-            log.info("开始全量同步技能...");
+            log.info("Starting full skill sync...");
 
             // 清空本地缓存
             skillCache.clear();
 
             // 调用 Admin API 获取所有技能
             try {
-                log.info("调用 Admin API 获取全量技能...");
+                log.debug("Fetching full skill set from Admin API");
                 // CloudSkillClient 会自动从 Admin 拉取所有技能，并返回全局时间戳
                 Long globalTimestamp = cloudSkillClient.syncSkills();
                 // syncSkills() 会强制要求返回全局时间戳，否则抛出异常
                 localTimestamp = globalTimestamp;
-                log.info("全量同步完成，获取到 {} 个技能，全局时间戳：{}", skillCache.getAll().size(), globalTimestamp);
+                // 原子更新双缓存，保证一致性
+                synchronized (this) {
+                    // SkillCache已更新，刷新ToolCache
+                    toolCache.refreshCache();
+                    // 全局版本号递增，所有缓存自动失效
+                    // 临时使用时间戳作为admin版本，后续从消息中获取真实版本
+                GlobalCacheVersion.update(System.currentTimeMillis());
+                }
+                log.info("Full sync completed: skills={}, globalTimestamp={}", skillCache.getAll().size(), globalTimestamp);
             } catch (Exception e) {
-                log.error("全量同步失败", e);
+                log.error("Full sync failed", e);
             }
         }, 0, 1000);
     }
@@ -342,7 +400,7 @@ public abstract class AbstractSkillChangeListener {
      */
     public void setLocalTimestamp(long timestamp) {
         this.localTimestamp = timestamp;
-        log.debug("本地时间戳已更新：{}", timestamp);
+        log.debug("Local timestamp updated: {}", timestamp);
     }
 
     /**

@@ -24,6 +24,8 @@ import com.cloudskill.sdk.config.CloudSkillProperties;
 import com.cloudskill.sdk.model.Skill;
 import com.cloudskill.sdk.model.SkillCallRequest;
 import com.cloudskill.sdk.model.SkillCallResult;
+import com.cloudskill.sdk.protocol.ProtocolClient;
+import com.cloudskill.sdk.protocol.http.HttpProtocolClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import cn.hutool.http.HttpRequest;
@@ -31,6 +33,7 @@ import cn.hutool.http.HttpResponse;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -54,13 +57,14 @@ public class CloudSkillClient {
     private final ObjectMapper objectMapper;
     private final SkillCache skillCache;
     private final ParameterValidator parameterValidator; // 参数校验器
+    private final Map<String, ProtocolClient> protocolClients = new HashMap<>(); // 协议客户端注册表
     
     @Autowired(required = false)
     private SkillMetrics skillMetrics; // 指标收集器
     
     @Autowired(required = false)
     private List<SkillExecutionHook> executionHooks = Collections.emptyList(); // 执行钩子扩展点
-    
+
     private ResilienceManager resilienceManager; // 熔断降级管理器
     private ScheduledExecutorService executorService; // 异步调用和定时任务线程池
     private long lastSyncTime = 0;
@@ -90,6 +94,9 @@ public class CloudSkillClient {
         );
         this.resilienceManager = initResilienceManager(properties); // 反射初始化熔断降级管理器（可选依赖）
         
+        // 初始化协议客户端
+        initProtocolClients();
+        
         // 初始化定时任务线程池
         this.executorService = Executors.newScheduledThreadPool(3, r -> {
             Thread thread = new Thread(r);
@@ -107,10 +114,17 @@ public class CloudSkillClient {
                 try {
                     syncSkills();
                 } catch (Exception e) {
-                    log.warn("首次技能同步失败，将在下次定时同步时重试：{}", e.getMessage());
+                    log.warn("Initial skill sync failed, will retry on next schedule: {}", e.getMessage());
                 }
             }, 5, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * 初始化协议客户端
+     */
+    private void initProtocolClients() {
+        protocolClients.put("http", new HttpProtocolClient(properties));
     }
     
     /**
@@ -120,7 +134,7 @@ public class CloudSkillClient {
      */
     public Long syncSkills() {
         try {
-            log.debug("Syncing skills from MCP server...");
+            log.debug("Syncing skills from Admin...");
             String url = properties.getServerUrl() + "/cloud-skill/v1/sdk/skills";
             
             HttpResponse response = HttpRequest.get(url)
@@ -176,10 +190,40 @@ public class CloudSkillClient {
     }
     
     /**
-     * 获取服务端全局时间戳
-     * @return 全局时间戳，如果获取失败返回null
+     * 最近一次 {@link #syncSkills()} 成功时服务端返回的全局时间戳；未同步过时为 0。
      */
-    public Long getGlobalTimestamp() {
+    public long getLastSyncedGlobalTimestamp() {
+        return lastSyncTime;
+    }
+
+    /**
+     * 统一的全局版本校验入口：
+     * 1) 内部先获取服务端全局版本
+     * 2) 若版本不一致则触发全量同步
+     *
+     * @return 是否执行了全量同步（true 表示已拉取最新技能入缓存）
+     */
+    public boolean syncIfGlobalVersionChanged() {
+        long localWatermark = lastSyncTime;
+        Long serverGlobalTs = fetchServerGlobalTimestamp();
+        if (serverGlobalTs == null || serverGlobalTs == localWatermark) {
+            return false;
+        }
+        log.info("Global skill version changed (local={}, server={}), triggering full sync", localWatermark, serverGlobalTs);
+        try {
+            syncSkills();
+            return true;
+        } catch (Exception e) {
+            log.error("Full sync failed, continuing with local cache", e);
+            return false;
+        }
+    }
+
+    /**
+     * 获取服务端全局时间戳（内部方法）。
+     * 注意：外部应统一通过 {@link #syncIfGlobalVersionChanged()} 触发版本校验+同步。
+     */
+    private Long fetchServerGlobalTimestamp() {
         try {
             String url = properties.getServerUrl() + "/cloud-skill/v1/sdk/global-timestamp";
             
@@ -207,9 +251,19 @@ public class CloudSkillClient {
     }
     
     /**
-     * 获取所有可用技能
+     * 获取所有可用技能（默认先执行 {@link #syncIfGlobalVersionChanged()}）。
      */
     public List<Skill> getAllSkills() {
+        return getAllSkills(true);
+    }
+
+    /**
+     * @param ensureGlobalVersionFirst 为 true 时在读取缓存前比对 Admin 全局时间戳；在已执行过全量同步的紧后流程中可传 false 以避免重复请求。
+     */
+    public List<Skill> getAllSkills(boolean ensureGlobalVersionFirst) {
+        if (ensureGlobalVersionFirst) {
+            syncIfGlobalVersionChanged();
+        }
         // 如果缓存为空或者距离上次同步超过5分钟，强制全量同步
         long fiveMinutesAgo = System.currentTimeMillis() - 5 * 60 * 1000;
         if (!properties.isEnableLocalCache() || skillCache.isEmpty() || lastSyncTime < fiveMinutesAgo) {
@@ -241,20 +295,15 @@ public class CloudSkillClient {
     /**
      * 调用技能
      */
-    public SkillCallResult invokeSkill(String skillId, Map<String, Object> parameters) {
-        log.info("准备调用技能：{}", skillId);
-        log.info("大模型传递的参数 params: size={}, params={}", 
-            parameters != null ? parameters.size() : "null", 
-            parameters != null ? parameters : "null");
+    public SkillCallResult invokeSkill(Long skillId, Map<String, Object> parameters) {
+        log.debug("Invoking skill: {}", skillId);
             
         // 构建请求对象
         SkillCallRequest request = new SkillCallRequest();
         request.setParameters(parameters);
         
         if (request.getParameters() == null) {
-            log.warn("request.parameters is null after setParameters!");
-        } else {
-            log.info("request.parameters set successfully: size={}", request.getParameters().size());
+            log.warn("Request parameters are null after assignment");
         }
                 
         // 直接调用，不从缓存获取技能信息，由 admin 平台返回结果
@@ -264,8 +313,8 @@ public class CloudSkillClient {
     /**
      * 调用技能（内部方法）
      */
-    public SkillCallResult invokeSkill(String skillId, SkillCallRequest request) {
-        log.info("发起技能调用：skillId={}", skillId);
+    public SkillCallResult invokeSkill(Long skillId, SkillCallRequest request) {
+        log.debug("Executing skill call: skillId={}", skillId);
         long startTime = System.currentTimeMillis();
         boolean success = false;
         String errorCode = null;
@@ -275,7 +324,7 @@ public class CloudSkillClient {
             // 1. 从缓存获取技能信息（包含 endpoint）
             Skill skill = getSkillFromCache(skillId);
             if (skill == null) {
-                log.error("技能不存在或不在缓存中：skillId={}", skillId);
+                log.error("Skill not found in local cache: skillId={}", skillId);
                 throw new RuntimeException("Skill not found: " + skillId);
             }
             
@@ -288,7 +337,7 @@ public class CloudSkillClient {
             if (!Boolean.TRUE.equals(skill.getIsPublic())) {
                 // 私有技能：检查是否有权限
                 if (!hasPermission(skill)) {
-                    log.error("无权限调用技能：skillId={}", skillId);
+                    log.error("No permission to invoke skill: skillId={}", skillId);
                     throw new RuntimeException("No permission to invoke skill: " + skillId);
                 }
             }
@@ -297,7 +346,7 @@ public class CloudSkillClient {
             return executeProviderCall(skill, request);
             
         } catch (Exception e) {
-            log.error("技能调用失败：skillId={}", skillId, e);
+            log.error("Skill invocation failed: skillId={}", skillId, e);
             success = false;
             errorCode = e.getMessage();
             
@@ -318,130 +367,33 @@ public class CloudSkillClient {
     }
     
     /**
-     * 直接调用 Provider 的 endpoint
+     * 调用 Provider（根据协议选择客户端）
      */
     private SkillCallResult executeProviderCall(Skill skill, SkillCallRequest request) {
-        // 1. 从 skill 中获取 endpoint
-        String providerUrl = skill.getEndpoint();
-        if (providerUrl == null || providerUrl.isEmpty()) {
-            throw new RuntimeException("Provider endpoint is null or empty: skillId=" + skill.getId());
+        // 获取协议类型，默认为 http
+        String protocol = skill.getProtocol();
+        if (protocol == null || protocol.isEmpty()) {
+            protocol = "http";
         }
-        
-        log.debug("直接调用 Provider: skillId={}, endpoint={}", skill.getId(), providerUrl);
-        
-        // 2. 根据 skill 的 HttpMethod 构建对应的 HTTP 请求
-        String httpMethod = skill.getHttpMethod() != null ? skill.getHttpMethod().toUpperCase() : "POST";
-        log.info("使用 HTTP 方法：{} 调用 Provider: skillId={}, url={}", httpMethod, skill.getId(), providerUrl);
-        
-        // 对于 GET/DELETE，如果有参数，先手动拼接到 URL query
-        StringBuilder urlBuilder = new StringBuilder(providerUrl);
-        if (("GET".equals(httpMethod) || "DELETE".equals(httpMethod)) 
-                && request.getParameters() != null && !request.getParameters().isEmpty()) {
-            boolean first = !providerUrl.contains("?");
-            for (var entry : request.getParameters().entrySet()) {
-                if (first) {
-                    urlBuilder.append("?");
-                    first = false;
-                } else {
-                    urlBuilder.append("&");
-                }
-                urlBuilder.append(java.net.URLEncoder.encode(entry.getKey(), java.nio.charset.StandardCharsets.UTF_8));
-                urlBuilder.append("=");
-                urlBuilder.append(java.net.URLEncoder.encode(String.valueOf(entry.getValue()), java.nio.charset.StandardCharsets.UTF_8));
-            }
-            providerUrl = urlBuilder.toString();
-            log.info("GET/DELETE 参数拼接完成：{}", providerUrl);
+
+        // 获取对应的协议客户端
+        ProtocolClient client = protocolClients.get(protocol.toLowerCase());
+        if (client == null) {
+            throw new RuntimeException("Unsupported protocol: " + protocol + 
+                ", available protocols: " + protocolClients.keySet());
         }
-        
-        // 构建基础请求（参数已经拼接到 URL，不再需要 body）
-        HttpRequest httpRequest;
-        switch (httpMethod) {
-            case "GET":
-                httpRequest = HttpRequest.get(providerUrl)
-                    .header("X-API-Key", properties.getApiKey())
-                    .header("X-Service-Name", properties.getServiceName())
-                    .header("X-IP-Address", properties.getServiceIp())
-                    .timeout(skill.getTimeout() != null ? skill.getTimeout() : properties.getCallTimeout());
-                break;
-            case "PUT":
-                httpRequest = HttpRequest.put(providerUrl)
-                    .header("Content-Type", "application/json")
-                    .header("X-API-Key", properties.getApiKey())
-                    .header("X-Service-Name", properties.getServiceName())
-                    .header("X-IP-Address", properties.getServiceIp())
-                    .timeout(skill.getTimeout() != null ? skill.getTimeout() : properties.getCallTimeout());
-                break;
-            case "DELETE":
-                httpRequest = HttpRequest.delete(providerUrl)
-                    .header("X-API-Key", properties.getApiKey())
-                    .header("X-Service-Name", properties.getServiceName())
-                    .header("X-IP-Address", properties.getServiceIp())
-                    .timeout(skill.getTimeout() != null ? skill.getTimeout() : properties.getCallTimeout());
-                break;
-            case "POST":
-            default:
-                httpRequest = HttpRequest.post(providerUrl)
-                    .header("Content-Type", "application/json")
-                    .header("X-API-Key", properties.getApiKey())
-                    .header("X-Service-Name", properties.getServiceName())
-                    .header("X-IP-Address", properties.getServiceIp())
-                    .timeout(skill.getTimeout() != null ? skill.getTimeout() : properties.getCallTimeout());
-                break;
-        }
-        
-        // 3. 添加自定义 headers（如果有）
-        if (skill.getHeaders() != null) {
-            skill.getHeaders().forEach(httpRequest::header);
-        }
-        
-        // 4. 添加请求参数（根据 HTTP 方法决定参数位置）
-        if (request.getParameters() != null && !request.getParameters().isEmpty()) {
-            if (!("GET".equals(httpMethod) || "DELETE".equals(httpMethod))) {
-                // POST/PUT 请求：参数放在 body 中
-                // GET/DELETE 已经在前面手动拼接到 URL 了
-                try {
-                    String paramsJson = objectMapper.writeValueAsString(request.getParameters());
-                    httpRequest.body(paramsJson);
-                    log.debug("POST/PUT 请求参数（body）：{}", paramsJson);
-                } catch (Exception e) {
-                    throw new RuntimeException("Failed to serialize parameters", e);
-                }
-            }
-            // GET/DELETE：参数已经拼接到 URL，不需要处理，也不应该有 body
-        }
-        
-        // 5. 执行调用
-        log.info("执行 Provider 调用：skillId={}, method={}, url={}", 
-            skill.getId(), skill.getHttpMethod(), providerUrl);
-        
-        HttpResponse response = httpRequest.execute();
-        
-        // 6. 解析响应
-        try {
-            String responseBody = response.body();
-            log.debug("Provider 响应：status={}, body={}", response.getStatus(), responseBody);
-            
-            if (response.getStatus() == 200) {
-                // 成功响应
-                SkillCallResult result = objectMapper.readValue(responseBody, SkillCallResult.class);
-                result.setSuccess(true);
-                return result;
-            } else {
-                // 错误响应
-                log.error("Provider 调用失败：skillId={}, status={}, body={}", 
-                    skill.getId(), response.getStatus(), responseBody);
-                throw new RuntimeException("Provider call failed: status=" + response.getStatus());
-            }
-        } catch (Exception e) {
-            log.error("解析 Provider 响应失败", e);
-            throw new RuntimeException("Failed to parse Provider response", e);
-        }
+
+        // 使用协议客户端调用
+        SkillCallResult response = client.invoke(skill, request.getParameters());
+
+        // 协议客户端已经返回 SkillCallResult，直接返回
+        return response;
     }
     
     /**
      * 从缓存获取技能
      */
-    private Skill getSkillFromCache(String skillId) {
+    private Skill getSkillFromCache(Long skillId) {
         if (properties.isEnableLocalCache()) {
             Skill skill = skillCache.get(skillId);
             if (skill != null) {
